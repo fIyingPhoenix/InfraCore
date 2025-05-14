@@ -50,9 +50,40 @@ This project is a fully functional Linux-based lab environment that simulates a 
 
 # VM Configuration
 <div id="VMSetup"></div>
-This is a guide on how to configure a virtual machine (VM).
+This guide explains how to configure a virtual machine (VM).
 In this example, I'm using Windows 11 Pro with Hyper-V.
 
-If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, click here.
+ If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, click here.
 
-By 
+For now, I'm using a PowerShell script to automatically create all 9 VMs.
+
+
+You can download the script directly to your user directory using PowerShell, or manually from the GitHub repository.
+
+```powershell
+# Download the script
+Invoke-WebRequest -Uri "https://github.com/fIyingPhoenix/InfraCore/raw/main/VM-Create.ps1" -OutFile "$HOME/VM-Create.ps1"
+```
+After downloading the script, edit it with Notepad or your preferred text editor. You can use the command below:
+``` bash
+# Edit the file
+Start-Process notepad.exe "$HOME/VM-Create.ps1"
+```
+ISO Path: Update the script with the correct path to your Operation System ISO file:  
+- `$ISO_Client` for Clients (windows ISO)
+- `$ISO_Server` for Servers (Ubuntu ISO) 
+RAM & CPU Cores: Adjust the memory and number of CPU cores as needed.
+- `$MemoryMinimumBytes` Minimum Alocated memory
+- `$MemoryMaximumBytes` Maximum Alocated Memory
+- `$MemoryStartupBytes` Memory every Wm Starts with
+VHD & Stat Files: Update the scriot with the correct path to save the Virtual Disks and Runtime Files
+- `$VMPath` VM Runtime State File
+- `$VHDPath` VM Virtual Disks
+
+Save the file and run the script!
+```
+#Run the script!
+cd $HOME; .\VM-Create.ps1
+```
+you shold get this output
+![image](images/createVM-output.png)

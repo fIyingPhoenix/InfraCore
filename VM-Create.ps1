@@ -1,3 +1,10 @@
+# Check for elevation
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "[X] Missing Privileges! Restarting as administrator..." -ForegroundColor Green
+    # Relaunch script as administrator
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
 
 # Automatically get the first available virtual switch (testing)
 $SwitchName = (Get-VMSwitch)[0].Name
@@ -10,6 +17,7 @@ $MemoryMinimumBytes = 512MB
 $MemoryMaximumBytes = 2GB  
 $MemoryStartupBytes = 1GB  # Must be within min and max
 $VHDSizeBytes = 64GB
+$CPUCoerAlocate = 2
 $ISO_Client = "C:\ISOs\windowns.iso" #Client iso path
 $ISO_Server = "C:\ISOs\linux.iso" #Server iso path
 
@@ -17,7 +25,7 @@ $ISO_Server = "C:\ISOs\linux.iso" #Server iso path
 $vmGroups = @(
     @{ BaseName = "Linux - Router"; Count = 2; ISO = $ISO_Server }, # by modifying the number, you can change how many VMs are made 
     @{ BaseName = "Linux - Server"; Count = 5; ISO = $ISO_Server },
-    @{ BaseName = "Win2 - Client"; Count = 2; ISO = $ISO_Client }
+    @{ BaseName = "Win - Client"; Count = 2; ISO = $ISO_Client }
 )
 
 # Create VMs
@@ -40,7 +48,7 @@ foreach ($group in $vmGroups) {
         New-VHD -Path $VHDFile -SizeBytes $VHDSizeBytes -Dynamic | Out-Null
 
         # Create Generation 2 VM
-        New-VM -Name $VMName -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $VHDFile -Path $VMStoragePath -SwitchName $SwitchName | Out-Null
+        New-VM -Name $VMName -Generation $CPUCoerAlocate -MemoryStartupBytes $MemoryStartupBytes -VHDPath $VHDFile -Path $VMStoragePath -SwitchName $SwitchName | Out-Null
 
         # Configure Dynamic Memory
         Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $true -MinimumBytes $MemoryMinimumBytes -MaximumBytes $MemoryMaximumBytes
