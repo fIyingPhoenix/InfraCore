@@ -48,4 +48,11 @@ This project is a fully functional Linux-based lab environment that simulates a 
 - Minimum: 4 CPU cores, 16 GB RAM per VM
 - Virtualization software (VirtualBox, VMware, Hyper-V). 
 
+# VM Configuration
 <div id="VMSetup"></div>
+This is a guide on how to configure a virtual machine (VM).
+In this example, I'm using Windows 11 Pro with Hyper-V.
+
+If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, click here.
+
+By 
