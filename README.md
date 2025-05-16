@@ -1,41 +1,44 @@
 # Project InfraCore
-#  Linux Active Directory Lab with DNS, DHCP, Mail, and Nextcloud
 
-This project is a fully functional Linux-based lab environment that simulates a small enterprise network with multiple subnets, Active Directory (Samba), DNS routing, DHCP, a mail server, and Nextcloud integration.
+## Linux Active Directory Lab with DNS, DHCP, Mail, and Nextcloud
+
+This project provides a fully functional Linux-based lab environment that simulates a small enterprise network with multiple subnets, Active Directory (Samba), DNS routing, DHCP, a mail server, and Nextcloud integration.
+
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#network-structure">Network Structure</a> •
+  <a href="#components">Components</a> •
+  <a href="#technologies-used">Technologies Used</a> •
+  <a href="#system-requirements">System Requirements</a> •
+  <a href="#Hyper-V">Hyper-V Setup</a> •
+  <a href="https://github.com/fIyingPhoenix/TrionControlPanel/issues">Request Feature</a>
+</p>
 
 ---
 
-  <p align="center">
-    <a href="#Overview">Overview</a>
-    <a href="#VMSetup">VM Setup</a>
-    <a href="https://github.com/fIyingPhoenix/TrionControlPanel/issues">Request Feature</a>
-  </p>
+<h2 id="overview">Overview</h2>
 
+Project InfraCore provides a comprehensive lab environment for learning and testing enterprise network configurations. The setup includes multiple interconnected subnets, domain controllers, and various network services to simulate a real-world corporate environment.
 
+<h2 id="network-structure">Network Structure</h2>
 
-<h1 align="center"><b>Overview</b> </h1> 
+| Network       | Description              | Subnet            | Router Interface IP |
+|---------------|--------------------------|-------------------|---------------------|
+| Private 1     | Building 1 Clients       | 192.168.10.0/24   | 192.168.10.254      |
+| Private 2     | Interbuilding (Bridge)   | 10.0.0.0/8        | 10.0.0.1, 10.0.0.2  |
+| Private 3     | Building 2 Clients       | 192.168.20.0/24   | 192.168.20.254      |
+| WAN           | Internet Access          | DHCP or Static    | Depends on Host     |
 
-<div id="Overview"></div>
-
-### Network Structure
-
-| Network       | Description           | Subnet            | Router Interface IP |
-|---------------|-----------------------|-------------------|---------------------|
-| Private 1     | Building 1 Clients     | 192.168.10.0/24   | 192.168.10.254      |
-| Private 2     | Interbuilding (Bridge) | 10.0.0.0/8        | 10.0.0.1, 10.0.0.2  |
-| Private 3     | Building 2 Clients     | 192.168.20.0/24   | 192.168.20.254      |
-| WAN           | Internet Access        | DHCP or Static    | Depends on Host     |
-
-## Components
+<h2 id="components">Components</h2>
 
 - **2 Router VMs** with IP forwarding and NAT
-- **2 AD/DNS Server** (`samba` + `bind9`)
+- **2 AD/DNS Servers** (`samba` + `bind9`)
 - **1 DHCP Server**
 - **1 Mail Server**
 - **1 Nextcloud Server**
 - **2 Client VMs** (join AD, test services)
-- 
-## Technologies Used
+
+<h2 id="technologies-used">Technologies Used</h2>
 
 - Ubuntu Server 24.04 LTS
 - Samba (Active Directory domain controller)
@@ -44,55 +47,96 @@ This project is a fully functional Linux-based lab environment that simulates a 
 - Nextcloud (self-hosted cloud platform)
 - Netplan (for IP management)
 
-## System Requirements (HOST)
+<h2 id="system-requirements">System Requirements (HOST)</h2>
 
-- Minimum: 4 CPU cores, 16 GB RAM per VM
-- Virtualization software (VirtualBox, VMware, Hyper-V). 
+- **Minimum**: 4 CPU cores, 16 GB RAM
+- **Recommended**: 8+ CPU cores, 32+ GB RAM
+- **Storage**: At least 100 GB free space
+- **Virtualization software**: VirtualBox, VMware, or Hyper-V
+- **Hardware virtualization**: Virtualization must be enabled in BIOS/UEFI settings (Intel VT-x/AMD-V)
 
-<h1 align="center"><b>VM Setup</b> </h1> 
+> **Important**: Before installing any virtualization software, ensure that hardware virtualization is enabled in your system's BIOS/UEFI settings. This is typically found under CPU settings as "Virtualization Technology," "VT-x," "AMD-V," or similar.
 
-<div id="VMSetup"></div>
-This guide explains how to configure a virtual machine (VM).
-In this example, I'm using Windows 11 Pro with Hyper-V.
+---
 
- If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, click here.
+<h2 id="Hyper-V">Hyper-V Setup</h2>
 
-For now, I'm using a PowerShell script to automatically create all 9 VMs.
+This guide explains how to configure the virtual machines for the lab environment. In this example, we're using Windows 11 Pro with Hyper-V.
 
+### Enable Hyper-V (Windows only)
 
-You can download the script directly to your user directory using PowerShell, or manually from the GitHub repository.
+Before creating VMs, you need to enable Hyper-V on your Windows system:
+
+**Option 1: Using Windows Features**
+
+1. Open **Control Panel** → **Programs** → **Turn Windows features on or off**
+2. Check the boxes for:
+   - Hyper-V
+   - Hyper-V Management Tools
+   - Hyper-V Platform
+3. Click **OK** and restart your computer when prompted
+
+**Option 2: Using PowerShell (Administrator)**
+
+Run this command in PowerShell with administrator privileges:
+
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All
+```
+
+If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, [click here](link-to-manual-setup.md).
+
+For faster deployment, you can use our PowerShell script to automatically create all 9 VMs.
+
+### Automated VM Creation
+
+You can download the script directly to your user directory using PowerShell, or manually from the GitHub repository:
 
 ```powershell
 # Download the script
 Invoke-WebRequest -Uri "https://github.com/fIyingPhoenix/InfraCore/raw/main/VM-Create.ps1" -OutFile "$HOME/VM-Create.ps1"
 ```
-After downloading the script, edit it with Notepad or your preferred text editor. You can use the command below:
-``` bash
+
+### Configure the Script
+
+After downloading the script, edit it with Notepad or your preferred text editor:
+
+```powershell
 # Edit the file
 Start-Process notepad.exe "$HOME/VM-Create.ps1"
 ```
-ISO Path: Update the script with the correct path to your Operation System ISO file:  
-- `$ISO_Client` for Clients (windows ISO)
-- `$ISO_Server` for Servers (Ubuntu ISO) 
 
-RAM & CPU Cores: Adjust the memory and number of CPU cores as needed.
+#### Required Modifications:
 
-- `$MemoryMinimumBytes` Minimum Alocated memory
-- `$MemoryMaximumBytes` Maximum Alocated Memory
-- `$MemoryStartupBytes` Memory every Wm Starts with
+1. **ISO Paths**: Update with the correct paths to your ISO files:
+   - `$ISO_Client` - Path to client OS ISO (Windows)
+   - `$ISO_Server` - Path to server OS ISO (Ubuntu)
 
-VHD & Stat Files: Update the scriot with the correct path to save the Virtual Disks and Runtime Files
+2. **Memory Allocation**:
+   - `$MemoryMinimumBytes` - Minimum allocated memory
+   - `$MemoryMaximumBytes` - Maximum allocated memory
+   - `$MemoryStartupBytes` - Initial memory at VM startup
 
-- `$VMPath` VM Runtime State File
-- `$VHDPath` VM Virtual Disks
+3. **Storage Locations**:
+   - `$VMPath` - Location for VM runtime state files
+   - `$VHDPath` - Location for virtual hard disks
 
-Save the file and run the script!
-```
-#Run the script!
+### Run the Script
+
+Once configured, run the script to create all VMs:
+
+```powershell
+# Run the script
 cd $HOME; .\VM-Create.ps1
 ```
 
-![image](images/createVM-output.png)
+![VM Creation Output](images/createVM-output.png)
 
-> [!NOTE]
-> Make sure the boot order is correct, and change the RAM to at least 4GB for Windows 11.
+> **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and 2 Cores to meet minimum requirements.
+
+### Next Steps
+
+After creating your VMs, proceed to the configuration guides:
+- [Network Configuration](link-to-network-config.md)
+- [Active Directory Setup](link-to-ad-setup.md)
+- [Service Deployment](link-to-services.md)
