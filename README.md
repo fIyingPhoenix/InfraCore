@@ -13,15 +13,16 @@ This project is a fully functional Linux-based lab environment that simulates a 
 
 
 
-# Overview 
+<h1 align="center"><b>Overview</b> </h1> 
 
 <div id="Overview"></div>
+
 ### Network Structure
 
 | Network       | Description           | Subnet            | Router Interface IP |
 |---------------|-----------------------|-------------------|---------------------|
 | Private 1     | Building 1 Clients     | 192.168.10.0/24   | 192.168.10.254      |
-| Private 2     | Interbuilding (Bridge) | 10.0.0.0/8        | 10.0.0.1, 10.0.0.2            |
+| Private 2     | Interbuilding (Bridge) | 10.0.0.0/8        | 10.0.0.1, 10.0.0.2  |
 | Private 3     | Building 2 Clients     | 192.168.20.0/24   | 192.168.20.254      |
 | WAN           | Internet Access        | DHCP or Static    | Depends on Host     |
 
@@ -48,7 +49,8 @@ This project is a fully functional Linux-based lab environment that simulates a 
 - Minimum: 4 CPU cores, 16 GB RAM per VM
 - Virtualization software (VirtualBox, VMware, Hyper-V). 
 
-# VM Configuration
+<h1 align="center"><b>VM Setup</b> </h1> 
+
 <div id="VMSetup"></div>
 This guide explains how to configure a virtual machine (VM).
 In this example, I'm using Windows 11 Pro with Hyper-V.
@@ -72,11 +74,15 @@ Start-Process notepad.exe "$HOME/VM-Create.ps1"
 ISO Path: Update the script with the correct path to your Operation System ISO file:  
 - `$ISO_Client` for Clients (windows ISO)
 - `$ISO_Server` for Servers (Ubuntu ISO) 
+
 RAM & CPU Cores: Adjust the memory and number of CPU cores as needed.
+
 - `$MemoryMinimumBytes` Minimum Alocated memory
 - `$MemoryMaximumBytes` Maximum Alocated Memory
 - `$MemoryStartupBytes` Memory every Wm Starts with
+
 VHD & Stat Files: Update the scriot with the correct path to save the Virtual Disks and Runtime Files
+
 - `$VMPath` VM Runtime State File
 - `$VHDPath` VM Virtual Disks
 
@@ -85,5 +91,8 @@ Save the file and run the script!
 #Run the script!
 cd $HOME; .\VM-Create.ps1
 ```
-you shold get this output
+
 ![image](images/createVM-output.png)
+
+> [!NOTE]
+> Make sure the boot order is correct, and change the RAM to at least 4GB for Windows 11.
