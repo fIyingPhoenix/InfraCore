@@ -6,21 +6,24 @@ This project provides a fully functional Linux-based lab environment that simula
 
 <p align="center">
   <a href="#overview">Overview</a> •
-  <a href="#network-structure">Network Structure</a> •
-  <a href="#components">Components</a> •
-  <a href="#technologies-used">Technologies Used</a> •
-  <a href="#system-requirements">System Requirements</a> •
-  <a href="#Hyper-V">Hyper-V Setup</a> •
-  <a href="https://github.com/fIyingPhoenix/TrionControlPanel/issues">Request Feature</a>
+  <a href="#Hyper-V">Hyper-V Setup</a> 
 </p>
 
 ---
 
-<h2 id="overview">Overview</h2>
+<div align="center">
+  <h2 id="overview">Overview</h2>
+</div>
 
+<p align="center">
+  <a href="#network-structure">Network Structure</a> •
+  <a href="#components">Components</a> •
+  <a href="#technologies-used">Technologies Used</a> •
+  <a href="#system-requirements">System Requirements</a> 
+</p>
 Project InfraCore provides a comprehensive lab environment for learning and testing enterprise network configurations. The setup includes multiple interconnected subnets, domain controllers, and various network services to simulate a real-world corporate environment.
 
-<h2 id="network-structure">Network Structure</h2>
+<h4 id="network-structure">Network Structure</h4>
 
 | Network       | Description              | Subnet            | Router Interface IP |
 |---------------|--------------------------|-------------------|---------------------|
@@ -29,7 +32,7 @@ Project InfraCore provides a comprehensive lab environment for learning and test
 | Private 3     | Building 2 Clients       | 192.168.20.0/24   | 192.168.20.254      |
 | WAN           | Internet Access          | DHCP or Static    | Depends on Host     |
 
-<h2 id="components">Components</h2>
+<h4 id="components">Components</h4>
 
 - **2 Router VMs** with IP forwarding and NAT
 - **2 AD/DNS Servers** (`samba` + `bind9`)
@@ -38,7 +41,7 @@ Project InfraCore provides a comprehensive lab environment for learning and test
 - **1 Nextcloud Server**
 - **2 Client VMs** (join AD, test services)
 
-<h2 id="technologies-used">Technologies Used</h2>
+<h4 id="technologies-used">Technologies Used</h4>
 
 - Ubuntu Server 24.04 LTS
 - Samba (Active Directory domain controller)
@@ -47,11 +50,11 @@ Project InfraCore provides a comprehensive lab environment for learning and test
 - Nextcloud (self-hosted cloud platform)
 - Netplan (for IP management)
 
-<h2 id="system-requirements">System Requirements (HOST)</h2>
+<h4 id="system-requirements">System Requirements (HOST)</h4>
 
 - **Minimum**: 4 CPU cores, 16 GB RAM
 - **Recommended**: 8+ CPU cores, 32+ GB RAM
-- **Storage**: At least 100 GB free space
+- **Storage**: At least 250 GB free space
 - **Virtualization software**: VirtualBox, VMware, or Hyper-V
 - **Hardware virtualization**: Virtualization must be enabled in BIOS/UEFI settings (Intel VT-x/AMD-V)
 
@@ -59,24 +62,17 @@ Project InfraCore provides a comprehensive lab environment for learning and test
 
 ---
 
-<h2 id="Hyper-V">Hyper-V Setup</h2>
+<div align="center">
+  <h2 id="Hyper-V">Hyper-V Setup</h2>
+</div>
 
 This guide explains how to configure the virtual machines for the lab environment. In this example, we're using Windows 11 Pro with Hyper-V.
 
-### Enable Hyper-V (Windows only)
+### Enable Hyper-V (Windows Host only)
 
 Before creating VMs, you need to enable Hyper-V on your Windows system:
 
-**Option 1: Using Windows Features**
-
-1. Open **Control Panel** → **Programs** → **Turn Windows features on or off**
-2. Check the boxes for:
-   - Hyper-V
-   - Hyper-V Management Tools
-   - Hyper-V Platform
-3. Click **OK** and restart your computer when prompted
-
-**Option 2: Using PowerShell (Administrator)**
+## Using PowerShell (Administrator)**
 
 Run this command in PowerShell with administrator privileges:
 
@@ -84,7 +80,7 @@ Run this command in PowerShell with administrator privileges:
 Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All
 ```
 
-If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, [click here](link-to-manual-setup.md).
+If you're looking for a detailed, step-by-step tutorial on how to set up a VM manually, [click here](Hyper-VSetup.md).
 
 For faster deployment, you can use our PowerShell script to automatically create all 9 VMs.
 
@@ -134,9 +130,6 @@ cd $HOME; .\VM-Create.ps1
 
 > **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and 2 Cores to meet minimum requirements.
 
-### Next Steps
-
-After creating your VMs, proceed to the configuration guides:
-- [Network Configuration](link-to-network-config.md)
-- [Active Directory Setup](link-to-ad-setup.md)
-- [Service Deployment](link-to-services.md)
+Start the VM's and install the Operations system. if you need  a guid you cand find it here:
+[Ubuntu]()
+[windows]()

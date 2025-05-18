@@ -194,3 +194,18 @@ foreach ($group in $vmGroups) {
 }
 
 Write-Host "`n[OK] Script completed successfully!" -ForegroundColor Green
+
+write-host "`n [+] Create Private Switch:" -ForegroundColor Blue
+
+# Define Switch groups
+$swGroups = @(
+    @{ BaseName = "PrivateSwitch 1"; },
+    @{ BaseName = "PrivateSwitch 2"; },
+    @{ BaseName = "PrivateSwitch 3"; }
+    )
+# Create VMs
+foreach ($group in $swGroups){
+    $baseName = $group.BaseName
+    New-VMSwitch -Name $SVName -SwitchType Private
+    write-host "`n [+] Swirch $baseName Created" -ForegroundColor Blue
+}
