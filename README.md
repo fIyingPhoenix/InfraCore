@@ -61,7 +61,8 @@ The domain I'm using is `smoke-break.lan`. It's an inside joke among my classmat
 - **Virtualization software**: VirtualBox, VMware, or Hyper-V
 - **Hardware virtualization**: Virtualization must be enabled in BIOS/UEFI settings (Intel VT-x/AMD-V)
 
-> **Important**: Before installing any virtualization software, ensure that hardware virtualization is enabled in your system's BIOS/UEFI settings. This is typically found under CPU settings as "Virtualization Technology," "VT-x," "AMD-V," or similar.
+> [!CAUTION]
+> Before installing any virtualization software, ensure that hardware virtualization is enabled in your system's BIOS/UEFI settings. This is typically found under CPU settings as "Virtualization Technology," "VT-x," "AMD-V," or similar.
 
 ---
 
@@ -134,7 +135,8 @@ cd $HOME; .\VM-Create.ps1 -Uninstall
 ![VM Creation Output](images/createVM-output.png)
 
 
-> **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and use 2 Cores to meet minimum requirements.
+> [!TIP]
+> Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and use 2 Cores to meet minimum requirements.
 
 ## Initial VM Setup
 
@@ -142,7 +144,8 @@ Start the VMs and install the operating systems. If you need guidance, you can f
 - [Ubuntu Installation Guide]()
 - [Windows Installation Guide]()
 
-> **Note**: Install only the first two Router VMs and assign just one NIC with the WAN connection to each VM. The other VMs will be installed after we configure the routers, as we need an internet connection to install and update the operating systems.
+> [!CAUTION]
+> the first two Router VMs and assign just one NIC with the WAN connection to each VM. The other VMs will be installed after we configure the routers, as we need an internet connection to install and update the operating systems.
 
 <div align="center">
   <h2 id="Router">Router Setup</h2>
@@ -253,7 +256,8 @@ Apply the settings:
 sudo netplan apply
 ```
 
-> **Note**: If you encounter an error, open the config file and make sure you have the correct spacing and syntax.
+> [!TIP]
+> If you encounter an error, open the config file and make sure you have the correct spacing and syntax.
 
 ### Enable IP Forwarding
 
@@ -279,7 +283,8 @@ sudo netfilter-persistent save
 
 ### Prepare the System
 
-> **Note**: Repeat the same system preparation steps as for Router 1, but change the hostname to `router2.smoke-break.lan`:
+> [!TIP]
+> Repeat the same system preparation steps as for Router 1, but change the hostname to `router2.smoke-break.lan`:
 
 ```bash 
 # Make sure you use your own domain!
