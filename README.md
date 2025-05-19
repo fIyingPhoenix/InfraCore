@@ -133,7 +133,6 @@ cd $HOME; .\VM-Create.ps1 -Uninstall
 
 ![VM Creation Output](images/createVM-output.png)
 
-# Network Router Setup Guide
 
 > **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and use 2 Cores to meet minimum requirements.
 
@@ -277,6 +276,17 @@ sudo netfilter-persistent save
 ```
 
 <h2 id="Router2">Router 2 Configuration</h2>
+
+### Prepare the System
+
+> **Note**: Repeat the same system preparation steps as for Router 1, but change the hostname to `router2.smoke-break.lan`:
+
+```bash 
+# Make sure you use your own domain!
+sudo apt update && sudo apt upgrade -y && sudo reboot
+sudo apt install nano netfilter-persistent iputils-ping iptables
+sudo hostnamectl set-hostname router2.smoke-break.lan
+```
 
 Now you can set up Router 2. Make sure you change the NIC to PrivateSwitch 2 (Interbuilding) and add a new NIC to it. You can do this manually in Hyper-V or use these commands:
 
