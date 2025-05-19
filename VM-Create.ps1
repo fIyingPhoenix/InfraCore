@@ -1,7 +1,45 @@
+# Script parameters for installation and uninstallation
+param (
+    [switch]$Install,
+    [switch]$Uninstall
+)
+
+# Common Configuration Variables
+$VMRootPath = "C:\Hyper-V"  # Change this to your desired root path
+$VMPath = "$VMRootPath\VMs" # Path for VM storage
+$VHDPath = "$VMRootPath\VHDs" # Path for VHD storage
+$MemoryMinimumBytes = 512MB # Minimum memory for dynamic memory
+$MemoryMaximumBytes = 2GB   # Maximum memory for dynamic memory
+$MemoryStartupBytes = 1GB   # Startup memory
+$CPUCoreAllocate = 2        # Number of CPU cores to allocate
+$VHDSizeBytes = 64GB        # Size of the VHD
+$ServerBaseName = "Linux - Server" # Base name for server VMs
+$ClientBaseName = "Win - Client"   # Base name for client VMs
+$RouterBaseName = "Linux - Router" # Base name for router VMs
+$SwitchBaseName = "PrivateSwitch"  # Base name for private switches 
+
+# Ensure ISOs point to different files as needed
+$ISO_Client = "d:\ISOs\client.iso"
+$ISO_Server = "d:\ISOs\server.iso"
+
+# Display help if no parameters provided
+if (-not ($Install -or $Uninstall)) {
+    Write-Host "VM Management Script - Usage:" -ForegroundColor Cyan
+    Write-Host "  -Install                : Create VMs and private switches" -ForegroundColor Yellow
+    Write-Host "  -Uninstall              : Remove all VMs and resources created by this script" -ForegroundColor Yellow
+    exit
+}
+
 # Check for elevation
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
     Write-Host "[X] Missing privileges! Restarting as administrator..." -ForegroundColor Yellow
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    
+    # Add parameters to restart command
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if ($Install) { $arguments += " -Install" }
+    if ($Uninstall) { $arguments += " -Uninstall" }
+    
+    Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
     exit
 }
 
@@ -10,8 +48,9 @@ if (-not (Get-Command Get-VMSwitch -ErrorAction SilentlyContinue)) {
     Write-Host "[X] Hyper-V PowerShell module not found! Please ensure Hyper-V is installed." -ForegroundColor Red
     exit
 }
-
-# Function to select a virtual switch
+# MAIN VM CREATION SECTION (INSTALL) 
+if ($Install) {
+# Function to select a virtual switch 
 function Select-VirtualSwitch {
     $switches = Get-VMSwitch
     
@@ -55,20 +94,6 @@ function Select-VirtualSwitch {
 $SwitchName = Select-VirtualSwitch
 Write-Host "[+] Using virtual switch: $SwitchName" -ForegroundColor Cyan
 
-# Common Configuration
-$VMPath = "C:\Hyper-V\VMs"
-$VHDPath = "C:\Hyper-V\VHDs"
-$MemoryMinimumBytes = 512MB
-$MemoryMaximumBytes = 2GB  
-$MemoryStartupBytes = 1GB
-$VHDSizeBytes = 64GB
-$CPUCoreAllocate = 2
-
-# Ensure ISOs point to different files as needed
-$ISO_Client = "d:\ISOs\client.iso"
-$ISO_Server = "d:\ISOs\server.iso"
-
-
 # Create storage directories if they don't exist
 if (-not (Test-Path -Path $VMPath)) {
     New-Item -ItemType Directory -Path $VMPath -Force | Out-Null
@@ -81,9 +106,9 @@ if (-not (Test-Path -Path $VHDPath)) {
 
 # Define VM groups
 $vmGroups = @(
-    @{ BaseName = "Linux - Router"; Count = 2; ISO = $ISO_Server; EnableSecureBoot = $false },
-    @{ BaseName = "Linux - Server"; Count = 5; ISO = $ISO_Server; EnableSecureBoot = $false },
-    @{ BaseName = "Win - Client"; Count = 2; ISO = $ISO_Client; EnableSecureBoot = $true }
+    @{ BaseName = $RouterBaseName; Count = 2; ISO = $ISO_Server; EnableSecureBoot = $false },
+    @{ BaseName = $ServerBaseName; Count = 5; ISO = $ISO_Server; EnableSecureBoot = $false },
+    @{ BaseName = $ClientBaseName; Count = 2; ISO = $ISO_Client; EnableSecureBoot = $true }
 )
 
 # Create VMs
@@ -170,11 +195,7 @@ foreach ($group in $vmGroups) {
                     Write-Host "[+] Successfully set DVD as first boot device" -ForegroundColor Cyan
                 } else {
                     Write-Host "[!] DVD entry not found in boot order. Trying alternative method..." -ForegroundColor Yellow
-                    
-                    # Alternative method - set boot order from scratch
-                    $NetworkAdapters = Get-VMNetworkAdapter -VMName $VMName
-                    $HDDPath = (Get-VMHardDiskDrive -VMName $VMName).Path
-                    
+                    # If DVD entry is not found, we can set the first boot device directly
                     # Create a new boot order with DVD first
                     # Note: We can't directly manipulate BootOrder, we need to use FirstBootDevice
                     # for the DVD and let the system handle the rest
@@ -199,13 +220,122 @@ write-host "`n [+] Create Private Switch:" -ForegroundColor Blue
 
 # Define Switch groups
 $swGroups = @(
-    @{ BaseName = "PrivateSwitch 1"; },
-    @{ BaseName = "PrivateSwitch 2"; },
-    @{ BaseName = "PrivateSwitch 3"; }
+    @{ BaseName = "$SwitchBaseName 1"; },
+    @{ BaseName = "$SwitchBaseName 2"; },
+    @{ BaseName = "$SwitchBaseName 3"; }
     )
-# Create VMs
+# Create Private Switches
 foreach ($group in $swGroups){
     $baseName = $group.BaseName
-    New-VMSwitch -Name $SVName -SwitchType Private
-    write-host "`n [+] Swirch $baseName Created" -ForegroundColor Blue
+    # Fix: Changed SVName to baseName
+    New-VMSwitch -Name $baseName -SwitchType Private
+    write-host "`n [+] Switch $baseName Created" -ForegroundColor Blue
+}
+}
+# UNINSTALL SECTION
+if ($Uninstall) {
+    Write-Host "`n[+] Starting uninstall process..." -ForegroundColor Blue
+    
+    # Check if Hyper-V PowerShell module is available
+    if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) {
+        Write-Host "[X] Hyper-V PowerShell module not found! Cannot perform uninstall." -ForegroundColor Red
+        exit
+    }
+    
+    # Get all VMs created by this script based on naming patterns
+    $vmGroups = @(
+        @{ Pattern = "$RouterBaseName *" },
+        @{ Pattern = "$ServerBaseName *" },
+        @{ Pattern = "$ClientBaseName *" }
+    )
+    
+    $vmsToRemove = @()
+    foreach ($group in $vmGroups) {
+        $vmsToRemove += Get-VM -Name $group.Pattern -ErrorAction SilentlyContinue
+    }
+    
+    # Confirm VM removal
+    if ($vmsToRemove.Count -gt 0) {
+        Write-Host "`nThe following VMs will be removed:" -ForegroundColor Yellow
+        $vmsToRemove | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor White }
+        
+        $confirm = Read-Host "`nAre you sure you want to remove these VMs? (Y/N)"
+        if ($confirm -ne "Y" -and $confirm -ne "y") {
+            Write-Host "[!] Uninstall canceled." -ForegroundColor Yellow
+            exit
+        }
+        
+        # Remove VMs
+        foreach ($vm in $vmsToRemove) {
+            Write-Host "[-] Removing VM: $($vm.Name)" -ForegroundColor DarkRed
+            
+            # Stop VM if running
+            if ($vm.State -ne 'Off') {
+                Write-Host "[-] Stopping VM..." -ForegroundColor DarkRed
+                Stop-VM -Name $vm.Name -Force -TurnOff
+            }
+            
+            # Get VM hard disks before removing the VM
+            $vmHardDisks = Get-VMHardDiskDrive -VMName $vm.Name | Select-Object -ExpandProperty Path
+            
+            # Remove the VM
+            Remove-VM -Name $vm.Name -Force
+            
+            # Remove associated VHD files
+            foreach ($disk in $vmHardDisks) {
+                if (Test-Path -Path $disk) {
+                    Write-Host "[-] Removing disk: $disk" -ForegroundColor DarkRed
+                    Remove-Item -Path $disk -Force
+                }
+            }
+            
+            # Remove VM folder
+            $vmPath = Join-Path -Path $VMPath -ChildPath $vm.Name
+            if (Test-Path -Path $vmPath) {
+                Write-Host "[-] Removing VM folder: $vmPath" -ForegroundColor DarkRed
+                Remove-Item -Path $vmPath -Recurse -Force
+            }
+        }
+    } else {
+        Write-Host "[!] No matching VMs found to remove." -ForegroundColor Yellow
+    }
+    
+    # Remove private switches
+    $switchPatterns = @("$SwitchBaseName *")
+    foreach ($pattern in $switchPatterns) {
+        $switchesToRemove = Get-VMSwitch -Name $pattern -ErrorAction SilentlyContinue
+        
+        if ($switchesToRemove.Count -gt 0) {
+            Write-Host "`nRemoving virtual switches:" -ForegroundColor Yellow
+            $switchesToRemove | ForEach-Object { 
+                Write-Host "[-] Removing switch: $($_.Name)" -ForegroundColor DarkRed
+                Remove-VMSwitch -Name $_.Name -Force
+            }
+        }
+    }
+    
+    # Ask to remove VM and VHD directories
+    $cleanupDirs = Read-Host "`nDo you want to remove the Hyper-V directories ($VMPath and $VHDPath)? (Y/N)"
+    if ($cleanupDirs -eq "Y" -or $cleanupDirs -eq "y") {
+        $directories = @($VMPath, "$VHDPath")
+        foreach ($dir in $directories) {
+            if (Test-Path -Path $dir) {
+                Write-Host "[-] Removing directory: $dir" -ForegroundColor DarkRed
+                Remove-Item -Path $dir -Recurse -Force
+            }
+        }
+        
+        # Remove parent directory if it's empty
+    $cleanupRootDir = Read-Host "`nDo you want to remove the Hyper-V Root Directory? ($VMRootPath)? (Y/N)"
+        if (($cleanupRootDir -eq "Y" -or $cleanupDirs -eq "y") -and (Test-Path -Path $VMRootPath)) {
+            $items = Get-ChildItem -Path $VMRootPath -ErrorAction SilentlyContinue
+            if (-not $items) {
+                Write-Host "[-] Removing empty parent directory: $VMRootPath" -ForegroundColor DarkRed
+                Remove-Item -Path $VMRootPath -Force
+            }
+        }
+    }
+    
+    Write-Host "`n[OK] Uninstall completed successfully!" -ForegroundColor Green
+    exit
 }

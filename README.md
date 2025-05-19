@@ -5,8 +5,9 @@
 This project provides a fully functional Linux-based lab environment that simulates a small enterprise network with multiple subnets, Active Directory (Samba), DNS routing, DHCP, a mail server, and Nextcloud integration.
 
 <p align="center">
-  <a href="#overview">Overview</a> •
-  <a href="#Hyper-V">Hyper-V Setup</a> 
+  <a href="#overview">Overview</a> • 
+  <a href="#Hyper-V">Hyper-V Setup</a> • 
+  <a href="#Router">Router Setup</a>
 </p>
 
 ---
@@ -23,12 +24,14 @@ This project provides a fully functional Linux-based lab environment that simula
 </p>
 Project InfraCore provides a comprehensive lab environment for learning and testing enterprise network configurations. The setup includes multiple interconnected subnets, domain controllers, and various network services to simulate a real-world corporate environment.
 
+The domain I'm using is `smoke-break.lan`. It's an inside joke among my classmates.
+
 <h4 id="network-structure">Network Structure</h4>
 
 | Network       | Description              | Subnet            | Router Interface IP |
 |---------------|--------------------------|-------------------|---------------------|
 | Private 1     | Building 1 Clients       | 192.168.10.0/24   | 192.168.10.254      |
-| Private 2     | Interbuilding (Bridge)   | 10.0.0.0/8        | 10.0.0.1, 10.0.0.2  |
+| Private 2     | Interbuilding (Bridge)   | 172.16.0.0/16     | 172.16.0.1, 172.16.0.2|
 | Private 3     | Building 2 Clients       | 192.168.20.0/24   | 192.168.20.254      |
 | WAN           | Internet Access          | DHCP or Static    | Depends on Host     |
 
@@ -123,13 +126,247 @@ Once configured, run the script to create all VMs:
 
 ```powershell
 # Run the script
-cd $HOME; .\VM-Create.ps1
+cd $HOME; .\VM-Create.ps1 -Install
+# To remove the VM's and 
+cd $HOME; .\VM-Create.ps1 -Uninstall
 ```
 
 ![VM Creation Output](images/createVM-output.png)
 
-> **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and 2 Cores to meet minimum requirements.
+# Network Router Setup Guide
 
-Start the VM's and install the Operations system. if you need  a guid you cand find it here:
-[Ubuntu]()
-[windows]()
+> **Note**: Make sure to check the boot order for each VM after creation. For Windows 11 VMs, increase the RAM to at least 4GB and use 2 Cores to meet minimum requirements.
+
+## Initial VM Setup
+
+Start the VMs and install the operating systems. If you need guidance, you can find it here:
+- [Ubuntu Installation Guide]()
+- [Windows Installation Guide]()
+
+> **Note**: Install only the first two Router VMs and assign just one NIC with the WAN connection to each VM. The other VMs will be installed after we configure the routers, as we need an internet connection to install and update the operating systems.
+
+<div align="center">
+  <h2 id="Router">Router Setup</h2>
+</div>
+
+I assume you've installed Ubuntu Minimal and configured a static IP for the main router (you should always have a static IP if possible). This guide will help you set up two Ubuntu 24.04 LTS-based routers with three NICs each. We'll configure Router 1 as the main gateway and Router 2 as a sub-router connected via an internal network.
+
+<p align="center">
+  <a href="#Router1">Router 1</a> •
+  <a href="#Router2">Router 2</a> 
+</p>
+
+<h2 id="Router1">Router 1 Configuration</h2>
+
+### Prepare the System
+
+```bash 
+# Make sure you use your own domain!
+sudo apt update && sudo apt upgrade -y && sudo reboot
+sudo apt install nano netfilter-persistent iputils-ping iptables
+sudo hostnamectl set-hostname router1.smoke-break.lan
+```
+
+### Adding Network Interfaces
+
+I assume you have just one NIC on your router (the "WAN" connection). We need to add 2 more NICs to the VM. You can do that manually in Hyper-V or using the commands below:
+
+```powershell
+# If you changed the variables in the script or created the VMs manually, make sure you use those variables.
+Add-VMNetworkAdapter -VMName "Linux - Router 1" -SwitchName "PrivateSwitch 1" # The Private network for Building 1
+Add-VMNetworkAdapter -VMName "Linux - Router 1" -SwitchName "PrivateSwitch 2" # The private network for Interbuilding (Bridge)
+```
+
+### Verify Network Interfaces
+
+You can check if Ubuntu detected the new NICs:
+
+```bash 
+ip a
+```
+
+If the NICs are detected, you should have 4 adapters: `lo`, `eth0`, `eth1`, `eth2` (your names may differ):
+
+![Router1Adapters](/images/router/router1Adatpters.PNG)
+
+- `lo` is the loopback adapter (localhost)
+- `eth0` should be the WAN connection 
+- `eth1` should be the PrivateSwitch 1 (Building 1)
+- `eth2` should be the PrivateSwitch 2 (Interbuilding, Bridge)
+
+### Configure Netplan
+
+First, navigate to the netplan config directory and list the files:
+
+```bash
+cd /etc/netplan && ls 
+```
+
+![Router1NetConf](/images/router/router1NetplanConf.PNG)
+
+In this example, the config file is `50-cloud-init.yaml`. Create a backup before editing:
+
+```bash
+sudo cp 50-cloud-init.yaml 50-cloud-init.bc
+```
+
+Edit the config file with a text editor of your choice:
+
+```bash
+sudo nano 50-cloud-init.yaml
+```
+
+Edit the configuration like the example below:
+
+```yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0: # WAN interface
+      addresses:
+        - 10.100.18.19/24 # Make sure you use your WAN IP
+      nameservers:
+        addresses: [1.1.1.1, 1.0.0.1] # You can use different Public DNS servers; I prefer CloudFlare
+      routes:
+        - to: default
+          via: 10.100.18.254 # Route to the WAN connection (default gateway of your WAN connection)
+    eth1: # Building 1 clients
+      addresses:
+        - 192.168.10.254/24 
+    eth2: # Bridge to Router 2
+      addresses:
+        - 172.16.0.1/16
+      routes:
+        - to: 192.168.20.0/24 
+          via: 172.16.0.2 # Route to the Private 3 (Building 2)
+```
+
+Test the configuration:
+
+```bash
+sudo netplan try
+```
+
+Apply the settings:
+
+```bash
+sudo netplan apply
+```
+
+> **Note**: If you encounter an error, open the config file and make sure you have the correct spacing and syntax.
+
+### Enable IP Forwarding
+
+```bash 
+echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-ipforward.conf
+sudo sysctl -p /etc/sysctl.d/99-ipforward.conf
+```
+
+### Set Up Network Address Translation (NAT)
+
+```bash
+# Make sure you are using the NIC that's connected to the WAN, in this example it's eth0
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+```
+
+### Make Settings Persistent
+
+```bash
+sudo netfilter-persistent save
+```
+
+<h2 id="Router2">Router 2 Configuration</h2>
+
+Now you can set up Router 2. Make sure you change the NIC to PrivateSwitch 2 (Interbuilding) and add a new NIC to it. You can do this manually in Hyper-V or use these commands:
+
+```powershell
+# Make sure to run the commands in order
+Connect-VMNetworkAdapter -VMName "Linux - Router 2" -SwitchName "PrivateSwitch 2"
+Add-VMNetworkAdapter -VMName "Linux - Router 2" -SwitchName "PrivateSwitch 3" 
+```
+
+### Verify Network Interfaces
+
+Check to see if the NICs are visible in your OS:
+
+```bash 
+ip a
+``` 
+
+### Configure Netplan for Router 2
+
+Make a backup of your current netplan config file:
+
+```bash
+cd /etc/netplan && sudo cp 50-cloud-init.yaml 50-cloud-init.bc
+```
+
+Edit the configuration:
+
+```bash
+sudo nano 50-cloud-init.yaml
+```
+
+Use this configuration:
+
+```yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses:
+        - 172.16.0.2/16
+      routes:
+        - to: default
+          via: 172.16.0.1
+        - to: 192.168.10.0/24
+          via: 172.16.0.1
+    eth1:
+      addresses:
+        - 192.168.20.1/24
+```
+
+Test and apply the settings:
+
+```bash
+sudo netplan try
+sudo netplan apply
+```
+
+### Enable Forwarding and Configure Firewall
+
+```bash 
+echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-ipforward.conf
+sudo sysctl -p /etc/sysctl.d/99-ipforward.conf
+
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+sudo iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+sudo iptables -A FORWARD -i eth0 -o eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT
+```
+
+### Make iptables Rules Persistent
+
+```bash
+sudo netfilter-persistent save
+```
+
+## Testing Your Configuration
+
+Now you've configured both routers and can test connectivity using ping commands:
+
+```bash
+# Ping between routers
+ping -c 3 172.16.0.1  # Ping the first router from the second one
+ping -c 3 172.16.0.2  # Ping the second router from the first one
+
+# Ping the private networks
+ping -c 3 192.168.10.254
+ping -c 3 192.168.20.254
+
+# Test WAN connectivity
+ping -c 3 1.1.1.1
+```
+
+If all pings are successful, you've configured the routers correctly and you're ready to go. If you encounter any errors, review the steps to identify where you went wrong. Make sure the NICs are correctly configured and the config files have proper syntax.
