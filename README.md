@@ -7,7 +7,8 @@ This project provides a fully functional Linux-based lab environment that simula
 <p align="center">
   <a href="#overview">Overview</a> • 
   <a href="#Hyper-V">Hyper-V Setup</a> • 
-  <a href="#Router">Router Setup</a>
+  <a href="#Router">Router Setup</a> • 
+  <a hreg="#AD-DNS"> AD/DNS Servers</a>
 </p>
 
 ---
@@ -381,7 +382,344 @@ ping -c 3 192.168.10.254
 ping -c 3 192.168.20.254
 
 # Test WAN connectivity
-ping -c 3 1.1.1.1
+ping -c 3 1. 1.1.1
 ```
 
 If all pings are successful, you've configured the routers correctly and you're ready to go. If you encounter any errors, review the steps to identify where you went wrong. Make sure the NICs are correctly configured and the config files have proper syntax.
+
+
+<div align="center">
+  <h2 id="Router">AD/DNS Servers Setup</h2>
+</div>
+
+Setting up Active Directory-like functionality on Linux typically involves Samba in AD DC (Domain Controller) mode, and BIND9 for DNS. We will use the servers named `Linux - Server 1` and `Linux - Server 3` for this setup.
+
+## Initial Setup
+
+Change the hostnames from `Linux - Server 1` to `PrivateNetwork 1` and from `Linux - Server 3` to `PrivateNetwork 3` so that they will be in their own private network. Start the VMs and install the OS.
+
+When you get to the network configuration point, edit the entry to point to `Router 1` for `Server 1` and to `Router 2` for `Server 3`.
+
+![EditIPV4Install](/images/ubuntu-Install/UbuntuEditIPV4Install.PNG)
+
+**Server 1 Network Configuration:**
+```plaintext
+Subnet: 192.168.10.0/24
+IP Address: 192.168.10.101
+Gateway: 192.168.10.254
+DNS: 1.1.1.1, 1.0.0.1 
+```
+
+**Server 3 Network Configuration:** 
+```plaintext
+Subnet: 192.168.20.0/24
+IP Address: 192.168.20.101
+Gateway: 192.168.20.254
+DNS: 1.1.1.1, 1.0.0.1 
+```
+
+![EditIPV4installAddress](images/ubuntu-Install/UbuntuEditIPV4Edit.png)
+
+The DNS will be later changed to use `Linux - Server 1` and `Linux - Server 3` as the main DNS resolvers. After you setup the networking, you should have internet access. Finish your installation and let's start!
+
+## 1. Prerequisites (on both servers)
+
+```bash 
+# Make sure you use your own domain!
+sudo apt update && sudo apt upgrade -y && sudo reboot
+sudo apt install nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind bind9 bind9utils dnsutils -y
+```
+
+> [!TIP]
+> During installation, leave Kerberos config empty if asked - we'll configure it manually.
+
+## 2. Set up Primary Domain Controller (Server 1)
+
+### Configure Hostname & Hosts File
+
+```bash 
+hostnamectl set-hostname dns1.smoke-break.lan
+```
+
+Edit `/etc/hosts`:
+
+```bash 
+sudo nano /etc/hosts
+```
+
+Add your server IPv4 and domain name like in the example below. Make sure to use your domain name!
+
+```plaintext
+127.0.0.1       localhost
+127.0.1.1       localhost
+192.168.10.101  dns1.smoke-break.lan dns1
+```
+
+### Configure Samba as AD DC with BIND9
+
+Move the old Samba config file and create a backup so you can restore it if needed:
+
+```bash
+sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
+```
+
+Provision Active Directory:
+
+```bash 
+sudo samba-tool domain provision --use-rfc2307 --interactive
+```
+
+Answer the prompts:
+- **Realm:** SMOKE-BREAK.LAN
+- **Domain:** SMOKEBREAK
+- **Server Role:** dc
+- **DNS backend:** BIND9_DLZ
+- **Admin password:** choose securely
+
+> [!TIP]
+> This process can take some time, especially on low-resource VMs or slow disks.
+> - On SSD and decent CPU: a few seconds to 1–2 minutes
+> - On slow systems (HDD, Raspberry Pi, low RAM): 5–10+ minutes is possible
+
+If it doesn't continue after 15-20+ minutes:
+
+1. Press `Ctrl+C` to cancel it (if it's still alive)
+2. Check for stuck processes:
+   ```bash 
+   ps aux | grep samba 
+   ```
+3. If you see stuck Samba processes, kill them:
+   ```bash 
+   sudo pkill -f samba
+   ```
+4. Delete the old config and try again:
+   ```bash
+   sudo samba-tool domain provision --use-rfc2307 --interactive -d 5
+   # The -d 5 flag gives more debug info
+   ```
+
+To check the logs:
+```bash 
+less /var/log/samba/log.samba
+```
+
+### Configure Kerberos
+
+Edit `/etc/krb5.conf`:
+
+```bash
+sudo nano /etc/krb5.conf
+```
+
+```ini 
+[libdefaults]
+    default_realm = SMOKE-BREAK.LAN
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    kdc_timesync = 1
+    ccache_type = 4
+    forwardable = true
+    proxiable = true
+    rdns = false
+    fcc-mit-ticketflags = true
+
+[realms]
+    SMOKE-BREAK.LAN = {
+        kdc = dns1.smoke-break.lan
+        admin_server = dns1.smoke-break.lan
+    }
+
+[domain_realm]
+    .smoke-break.lan = SMOKE-BREAK.LAN
+    smoke-break.lan = SMOKE-BREAK.LAN
+```
+
+### Configure BIND9 for Samba
+
+Add to `/etc/bind/named.conf` config file:
+
+```bash
+sudo nano /etc/bind/named.conf
+```
+
+Add this line:
+```
+include "/var/lib/samba/bind-dns/named.conf";
+```
+
+Adjust AppArmor:
+
+```bash
+sudo ln -s /var/lib/samba/bind-dns /etc/bind/
+```
+
+Restart services:
+
+```bash
+sudo systemctl stop systemd-resolved
+sudo systemctl disable systemd-resolved
+sudo rm /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+
+sudo reboot
+```
+
+Test DNS functionality:
+
+```bash
+host -t SRV _ldap._tcp.smoke-break.lan
+host -t SRV _kerberos._udp.smoke-break.lan
+host -t A dns1.smoke-break.lan
+```
+ 
+You should get an output like:
+
+```
+_ldap._tcp.smoke-break.lan has SRV record 0 100 389 dns1.smoke-break.lan.
+_kerberos._udp.smoke-break.lan has SRV record 0 100 88 dns1.smoke-break.lan.
+dns1.smoke-break.lan has address 192.168.10.101
+```
+
+### Configure the Firewall
+
+```bash
+sudo ufw allow 53
+sudo ufw allow 88
+sudo ufw allow 135
+sudo ufw allow 389
+sudo ufw allow 445
+sudo ufw allow 464
+sudo ufw allow 636
+sudo ufw enable
+```
+
+## 3. Set up Secondary Domain Controller (Server 3)
+
+### Configure Hostname & Hosts File
+
+```bash 
+sudo hostnamectl set-hostname dns2.smoke-break.lan
+sudo nano /etc/hosts
+```
+
+```plaintext
+127.0.0.1       localhost
+127.0.1.1       dns2.smoke-break.lan dns2
+192.168.20.101  dns2.smoke-break.lan dns2
+```
+
+### Join the Domain
+
+Move the old Samba config file and create a backup:
+
+```bash
+sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
+```
+
+Join the domain as a domain controller:
+
+```bash
+sudo samba-tool domain join SMOKE-BREAK.LAN DC --dns-backend=BIND9_DLZ --username=administrator
+```
+
+### Configure BIND9
+
+Add to `/etc/bind/named.conf` config file:
+
+```bash
+sudo nano /etc/bind/named.conf
+```
+
+Add this line:
+```
+include "/var/lib/samba/bind-dns/named.conf";
+```
+
+Adjust AppArmor:
+
+```bash
+sudo ln -s /var/lib/samba/bind-dns /etc/bind/
+```
+
+### Restart Services
+
+```bash
+sudo systemctl stop systemd-resolved
+sudo systemctl disable systemd-resolved
+sudo rm /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+
+sudo reboot
+```
+
+### Test Secondary DC
+
+Test with:
+
+```bash
+host -t SRV _ldap._tcp.smoke-break.lan
+host -t A dns2.smoke-break.lan
+```
+
+### Configure Firewall
+
+```bash
+sudo ufw allow 53
+sudo ufw allow 88
+sudo ufw allow 135
+sudo ufw allow 389
+sudo ufw allow 445
+sudo ufw allow 464
+sudo ufw allow 636
+sudo ufw enable
+```
+
+## 4. Client Configuration
+
+Install the Windows clients now:
+- `Win - Client 1` should be on `PrivateSwitch 1` (pointing to Server 1)
+- `Win - Client 2` should be on `PrivateSwitch 2` (pointing to Server 3)
+
+
+Configure the Windows clients to use the respective domain controllers as their DNS servers:
+
+Client 1
+- **Address:** 192.168.10.50
+- **Netmask:** 255.255.255.0
+- **Gateway:** 192.168.10.254
+- **Primary DNS**  192.168.10.101
+- **Secondary DNS:**  192.168.20.101
+
+Client 2
+- **Address:** 192.168.20.50
+- **Netmask:** 255.255.255.0
+- **Gateway:** 192.168.20.254
+- **Primary DNS**  192.168.10.101
+- **Secondary DNS:**  192.168.20.101
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Check service status:**
+   ```bash
+   sudo systemctl status samba-ad-dc
+   sudo systemctl status bind9
+   ```
+
+2. **Check logs:**
+   ```bash
+   sudo tail -f /var/log/samba/log.samba
+   sudo tail -f /var/log/bind/bind.log
+   ```
+
+3. **Test connectivity:**
+   ```bash
+   ping dns1.smoke-break.lan
+   ping dns2.smoke-break.lan
+   ```
+
+4. **Verify domain functionality:**
+   ```bash
+   samba-tool domain info smoke-break.lan
+   ```
