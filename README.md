@@ -234,9 +234,7 @@ network:
   renderer: networkd
   ethernets:
     eth0: # WAN interface
-      # addresses: [10.100.18.19/24] # Example static IP for WAN
       dhcp4: true # Or use DHCP if your WAN provides it
-      # gateway4: 10.100.18.254 # Only if using static IP
       nameservers:
         addresses: [1.1.1.1, 1.0.0.1] # Cloudflare DNS, good choice
     eth1: # Building 1 clients (PrivateSwitch 1)
@@ -255,8 +253,10 @@ If using static WAN IP for `eth0`:
 # ...
     eth0: # WAN interface
       addresses:
-        - 10.100.18.19/24 # Make sure you use your WAN IP
-      gateway4: 10.100.18.254 # Route to the WAN connection (default gateway of your WAN connection)
+        - 10.100.18.19/24
+      routes:
+        - to: default # Make sure you use your WAN IP
+          via: 10.100.18.254 # Route to the WAN connection (default gateway of your WAN connection
       nameservers:
         addresses: [1.1.1.1, 1.0.0.1]
 # ...
@@ -393,9 +393,6 @@ ping -c 3 172.16.0.1    # Ping Router 1's interbuilding IP
 ping -c 3 192.168.10.254 # Ping Router 1's Building 1 LAN IP (via Router 1)
 ping -c 3 1.1.1.1       # Ping external (Cloudflare DNS)
 ```
-*(Typo fixed: `1. 1.1.1` to `1.1.1.1`)*
-If all pings are successful, routers are configured. Troubleshoot NIC assignments, Netplan YAML, and `iptables` if issues arise.
-
 <div align="center">
   <h2 id="ad-dns-servers-setup">AD/DNS Servers Setup</h2>
 </div>
@@ -436,11 +433,19 @@ Setting up Active Directory-like functionality on Linux involves Samba as an AD 
 ```bash
 # Update system and install packages
 sudo apt update && sudo apt full-upgrade -y # Use full-upgrade for robustness
-sudo apt install -y nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind bind9 bind9utils dnsutils ntp # Added ntp for time sync
+sudo apt install -y nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind bind9 bind9utils dnsutils chrony
 sudo reboot
 
 # Configure NTP for time synchronization (crucial for Kerberos)
-sudo timedatectl set-ntp true
+sudo systemctl start chrony
+sudo systemctl enable chrony
+timedatectl status
+# Look for:
+# System clock synchronized: yes
+# NTP service: active
+
+chronyc sources
+# You should see servers listed with a '*' or '+' next to them, indicating they are being used.
 ```
 > [!TIP]
 > During `krb5-user` installation, if prompted for Kerberos realm, you can leave it blank as Samba will configure it, or enter `SMOKE-BREAK.LAN` (all caps).
@@ -484,7 +489,7 @@ sudo samba-tool domain provision --use-rfc2307 --interactive
 ```
 Answer the prompts:
 - **Realm:** `SMOKE-BREAK.LAN` (Must be ALL CAPS)
-- **Domain:** `SMOKEBREAK` (NetBIOS name, usually first part of realm, ALL CAPS)
+- **Domain:** `SMOKE-BREAK` (NetBIOS name, usually first part of realm, ALL CAPS)
 - **Server Role:** `dc`
 - **DNS backend:** `BIND9_DLZ`
 - **DNS forwarder IP address (leave blank to disable):** `1.1.1.1` (Or your preferred external DNS forwarder)
@@ -502,7 +507,6 @@ Copy Samba's Kerberos config:
 ```bash
 sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 ```
-*(Self-correction: Samba provision creates a krb5.conf tailored for the AD. It's better to use this one than manually creating it.)*
 
 ### Configure BIND9 for Samba (Server 1)
 Edit BIND9 configuration. The main file is usually `/etc/bind/named.conf`. Add the include for Samba's BIND9_DLZ:
@@ -510,10 +514,6 @@ Edit BIND9 configuration. The main file is usually `/etc/bind/named.conf`. Add t
 sudo nano /etc/bind/named.conf.options # Often better to put Samba's specifics here or in named.conf.local
 ```
 Add Samba's generated BIND configuration. Typically, you add this to `/etc/bind/named.conf.local` or ensure it's included by `named.conf`:
-```bind
-// In /etc/bind/named.conf.local (or similar included file)
-include "/var/lib/samba/bind-dns/named.conf";
-```
 You also need to configure `named.conf.options` to allow BIND to talk to Samba, and to set forwarders if not done during provision:
 ```bash
 sudo nano /etc/bind/named.conf.options
@@ -522,6 +522,8 @@ Ensure it contains (or add):
 ```bind
 options {
     directory "/var/cache/bind";
+
+    include "/var/lib/samba/bind-dns/named.conf"; //Samba's BIND9_DLZ 
 
     // If you are providing DNS for IPv6, uncomment the following lines:
     // listen-on-v6 { any; };
@@ -534,18 +536,15 @@ options {
         1.0.0.1;
     };
     forward only; // Or "forward first;"
-
     // Allow queries from your LANs
     allow-query { localhost; localnets; 192.168.10.0/24; 192.168.20.0/24; 172.16.0.0/16; };
     // Allow recursion for your clients
     allow-recursion { localhost; localnets; 192.168.10.0/24; 192.168.20.0/24; 172.16.0.0/16; };
 };
 ```
-*(Self-correction: The `include "/var/lib/samba/bind-dns/named.conf";` line is crucial. AppArmor fix is also important.)*
+*(The `include "/var/lib/samba/bind-dns/named.conf";` line is crucial. AppArmor fix is also important.)*
 
 Adjust AppArmor for BIND9:
-The symlink `sudo ln -s /var/lib/samba/bind-dns /etc/bind/` is not the standard way to fix AppArmor.
-Instead, edit the AppArmor profile for BIND or set it to complain mode for testing:
 ```bash
 # Option 1: Set BIND to complain mode (less secure, for troubleshooting)
 # sudo aa-complain /usr/sbin/named
@@ -656,7 +655,7 @@ sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak # If it exists
 ```
 Join the domain as a DC:
 ```bash
-sudo samba-tool domain join smoke-break.lan DC -U"SMOKEBREAK\administrator" --dns-backend=BIND9_DLZ
+sudo samba-tool domain join smoke-break.lan DC -U"SMOKE-BREAK\administrator" --dns-backend=BIND9_DLZ
 # Or: sudo samba-tool domain join smoke-break.lan DC --username=administrator --dns-backend=BIND9_DLZ
 ```
 Enter the Administrator password when prompted.
@@ -749,7 +748,7 @@ Configure static IP addresses on Windows clients:
 1.  On a Windows client, open System Properties (`sysdm.cpl`).
 2.  Click "Change..." under Computer Name tab.
 3.  Under "Member of", select "Domain:" and type `smoke-break.lan`.
-4.  Click OK. You'll be prompted for credentials. Use `SMOKEBREAK\administrator` and the password you set during Samba provision.
+4.  Click OK. You'll be prompted for credentials. Use `SMOKE-BREAK\administrator` and the password you set during Samba provision.
 5.  If successful, you'll be welcomed to the domain and prompted to restart.
 
 ## Troubleshooting AD/DNS
