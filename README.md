@@ -203,7 +203,7 @@ ip a
 ```
 You should see interfaces like `lo`, `eth0` (WAN), `eth1` (PrivateSwitch 1), `eth2` (PrivateSwitch 2). Names (`ethX`) may vary. Identify them carefully.
 
-![Router1Adapters](images/router/router1Adapters.PNG) 
+![Router1Adapters](images/router/router1Adatpters.PNG) 
 
 - `lo`: loopback
 - `eth0`: WAN (e.g., connected to Hyper-V "Default Switch" or an External switch for internet)
@@ -432,7 +432,7 @@ Setting up Active Directory-like functionality on Linux involves Samba as an AD 
 ## 1. Prerequisites (on both AD/DNS servers)
 ```bash
 # Update system and install packages
-sudo apt update && sudo apt full-upgrade -y # Use full-upgrade for robustness
+sudo apt update && sudo apt upgrade -y # Use upgrade for robustness
 sudo apt install -y nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind bind9 bind9utils dnsutils chrony
 sudo reboot
 
@@ -510,9 +510,6 @@ sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 
 ### Configure BIND9 for Samba (Server 1)
 Edit BIND9 configuration. The main file is usually `/etc/bind/named.conf`. Add the include for Samba's BIND9_DLZ:
-```bash
-sudo nano /etc/bind/named.conf.options # Often better to put Samba's specifics here or in named.conf.local
-```
 Add Samba's generated BIND configuration. Typically, you add this to `/etc/bind/named.conf.local` or ensure it's included by `named.conf`:
 You also need to configure `named.conf.options` to allow BIND to talk to Samba, and to set forwarders if not done during provision:
 ```bash
@@ -576,7 +573,7 @@ Start and enable services:
 ```bash
 sudo systemctl unmask samba-ad-dc # If it was masked
 sudo systemctl start samba-ad-dc bind9
-sudo systemctl enable samba-ad-dc bind9
+sudo systemctl enable samba-ad-dc bind9 # alias named!
 # sudo systemctl status samba-ad-dc bind9 # Check status
 ```
 Reboot for good measure:
