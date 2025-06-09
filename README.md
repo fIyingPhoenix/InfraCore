@@ -37,20 +37,24 @@ The domain I'm using is `smoke-break.lan`. It's an inside joke among my classmat
 | Private 3     | Building 2 Clients       | 192.168.20.0/24   | 192.168.20.254      |
 | WAN           | Internet Access          | DHCP or Static    | Depends on Host     |
 
+  <details align="center">
+    <summary>Visual Example</summary>
+    <img src="images/diagram.png" alt="Image 1"/>
+  </details>
+  
 <h4 id="components">Components</h4>
 
 - **2 Router VMs** with IP forwarding and NAT
-- **2 AD/DNS Servers** (`samba` + `bind9`)
+- **2 AD/DNS Servers** (`samba`)
 - **1 DHCP Server** *(Setup guide to be added)*
 - **1 Mail Server** *(Setup guide to be added)*
 - **1 Nextcloud Server** *(Setup guide to be added)*
-- **2 Client VMs** (join AD, test services)
+- **2 Client VMs** (Setup guide to be added)
 
 <h4 id="technologies-used">Technologies Used</h4>
 
 - Ubuntu Server 24.04 LTS
 - Samba (Active Directory domain controller)
-- Bind9 (DNS)
 - `iptables` (NAT/routing)
 - Nextcloud (self-hosted cloud platform)
 - Netplan (for IP management)
@@ -171,7 +175,7 @@ Router 1 will connect to the WAN, Private 1 (Building 1), and Private 2 (Interbu
 
 ```bash
 # Update system and install necessary packages
-sudo apt update && sudo apt upgrade -y
+sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y nano netfilter-persistent iputils-ping iptables
 sudo reboot # Important for kernel updates if any
 
@@ -217,6 +221,7 @@ Navigate to netplan config:
 cd /etc/netplan && ls
 ```
 Identify your YAML file (e.g., `00-installer-config.yaml` or `50-cloud-init.yaml`).
+
 ![Router1NetplanConf](images/router/router1NetplanConf.PNG) 
 
 Create a backup:
@@ -294,7 +299,7 @@ Router 2 connects Private 2 (Interbuilding) and Private 3 (Building 2).
 ### Prepare the System (Router 2)
 ```bash
 # Update system and install necessary packages
-sudo apt update && sudo apt upgrade -y
+sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y nano netfilter-persistent iputils-ping iptables
 sudo reboot
 
@@ -393,11 +398,13 @@ ping -c 3 172.16.0.1    # Ping Router 1's interbuilding IP
 ping -c 3 192.168.10.254 # Ping Router 1's Building 1 LAN IP (via Router 1)
 ping -c 3 1.1.1.1       # Ping external (Cloudflare DNS)
 ```
+
+
 <div align="center">
-  <h2 id="ad-dns-servers-setup">AD/DNS Servers Setup</h2>
+  <h2 id="ad-dns-servers-setup">AD/DNS Servers Setup (Samba Internal DNS)</h2>
 </div>
 
-Setting up Active Directory-like functionality on Linux involves Samba as an AD DC (Domain Controller) and BIND9 for DNS. We will use `Linux - Server 1` (as Primary DC: `dns1`) and `Linux - Server 3` (as Secondary DC: `dns2`).
+Setting up Active Directory-like functionality on Linux involves Samba as an AD DC (Domain Controller) using its **internal DNS server**. We will use `Linux - Server 1` (as Primary DC: `dns1`) and `Linux - Server 3` (as Secondary DC: `dns2`).
 
 ## Initial Setup for AD/DNS Servers
 
@@ -432,24 +439,28 @@ Setting up Active Directory-like functionality on Linux involves Samba as an AD 
 ## 1. Prerequisites (on both AD/DNS servers)
 ```bash
 # Update system and install packages
-sudo apt update && sudo apt upgrade -y # Use upgrade for robustness
-sudo apt install -y nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind bind9 bind9utils dnsutils chrony
+sudo apt update && sudo apt full-upgrade -y # Use upgrade for robustness
+sudo apt install -y nano ufw iputils-ping samba krb5-user krb5-config winbind libpam-winbind libnss-winbind chrony dnsutils 
+
 sudo reboot
 
-# Configure NTP for time synchronization (crucial for Kerberos)
+```
+> [!TIP]
+> During `krb5-user` installation, if prompted for Kerberos realm, you can leave it blank as Samba will configure it, or enter `SMOKE-BREAK.LAN` (all caps).
+
+### Configure NTP for time synchronization (crucial for Kerberos)
+
+```bash
 sudo systemctl start chrony
 sudo systemctl enable chrony
 timedatectl status
 # Look for:
 # System clock synchronized: yes
 # NTP service: active
-
 chronyc sources
 # You should see servers listed with a '*' or '+' next to them, indicating they are being used.
 ```
-> [!TIP]
-> During `krb5-user` installation, if prompted for Kerberos realm, you can leave it blank as Samba will configure it, or enter `SMOKE-BREAK.LAN` (all caps).
-
+![timeSync](images/timesync.png)
 ## 2. Set up Primary Domain Controller (Server 1 - `dns1`)
 
 ### Configure Hostname & Hosts File (Server 1)
@@ -465,20 +476,12 @@ Ensure `/etc/hosts` looks like this:
 # 127.0.1.1       dns1.smoke-break.lan dns1
 ```
 
-### Configure Samba as AD DC with BIND9_DLZ Backend (Server 1)
+### Configure Samba as AD DC with Internal DNS (Server 1)
 Stop services that might interfere:
 ```bash
 sudo systemctl stop smbd nmbd winbind systemd-resolved
 sudo systemctl disable smbd nmbd winbind systemd-resolved
 ```
-Remove existing `/etc/resolv.conf` if it's a symlink and create a static one for provisioning:
-```bash
-sudo rm /etc/resolv.conf
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf # Temporarily point to self
-# Alternatively, use an external DNS like 1.1.1.1 for the provisioning step if local DNS isn't up yet
-# echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
-```
-
 Backup existing Samba config:
 ```bash
 sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
@@ -491,8 +494,8 @@ Answer the prompts:
 - **Realm:** `SMOKE-BREAK.LAN` (Must be ALL CAPS)
 - **Domain:** `SMOKE-BREAK` (NetBIOS name, usually first part of realm, ALL CAPS)
 - **Server Role:** `dc`
-- **DNS backend:** `BIND9_DLZ`
-- **DNS forwarder IP address (leave blank to disable):** `1.1.1.1` (Or your preferred external DNS forwarder)
+- **DNS backend:** `SAMBA_INTERNAL` 
+- **DNS forwarder IP address (leave blank to disable):** `1.1.1.1` (Or your preferred external DNS forwarder. Highly recommended.)
 - **Administrator password:** Choose a strong, secure password.
 
 > [!TIP]
@@ -503,78 +506,142 @@ Answer the prompts:
 > 4. Restore `smb.conf.bak` if necessary, ensure `/etc/resolv.conf` is correct, and retry `samba-tool domain provision ... -d 5` for debug info.
 > 5. Check logs: `less /var/log/samba/log.samba`
 
+A robust smb.conf for `dns1`:
+```ini
+# Global parameters
+[global]
+        # --- Basic AD DC Settings ---
+        netbios name = DNS1
+        realm = SMOKE-BREAK.LAN
+        workgroup = SMOKE-BREAK
+        server role = active directory domain controller
+
+        # --- DNS Configuration ---
+        dns forwarder = 1.1.1.1 
+        # Or your preferred external DNS (e.g., your router's IP, 8.8.8.8)
+        allow dns updates = secure 
+        # Default for SAMBA_INTERNAL, good to be explicit
+
+        # --- Logging (adjust levels as needed for troubleshooting) ---
+        log file = /var/log/samba/log.%m
+        # 50MB per file
+        max log size = 50000 
+        logging = file
+        log level = 1 
+        # Default production level; increase for debugging (e.g., 3 or higher)
+        # For very verbose DNS debugging on this DC:
+        # dns:log level = 5
+
+# --- Standard AD Shares ---
+[sysvol]
+        path = /var/lib/samba/sysvol
+        read only = No
+
+[netlogon]
+        path = /var/lib/samba/sysvol/smoke-break.lan/scripts
+        read only = No
+```
 Copy Samba's Kerberos config:
 ```bash
 sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 ```
+### Configure Kerberos
 
-### Configure BIND9 for Samba (Server 1)
-Edit BIND9 configuration. The main file is usually `/etc/bind/named.conf`. Add the include for Samba's BIND9_DLZ:
-Add Samba's generated BIND configuration. Typically, you add this to `/etc/bind/named.conf.local` or ensure it's included by `named.conf`:
-You also need to configure `named.conf.options` to allow BIND to talk to Samba, and to set forwarders if not done during provision:
+Edit `/etc/krb5.conf`:
+
 ```bash
-sudo nano /etc/bind/named.conf.options
+sudo nano /etc/krb5.conf
 ```
-Ensure it contains (or add):
-```bind
-options {
-    directory "/var/cache/bind";
 
-    include "/var/lib/samba/bind-dns/named.conf"; //Samba's BIND9_DLZ 
+```ini 
+[libdefaults]
+    # Define your default Kerberos realm
+    default_realm = SMOKE-BREAK.LAN
 
-    // If you are providing DNS for IPv6, uncomment the following lines:
-    // listen-on-v6 { any; };
+    # When set to true, use DNS SRV records to find KDCs.
+    # This is generally recommended for AD environments and allows dynamic discovery.
+    # Samba's internal DNS will serve these records.
+    dns_lookup_kdc = true
 
-    tkey-gssapi-keytab "/var/lib/samba/bind-dns/dns.keytab"; // For secure DDNS
+    # When set to true, use DNS TXT records to find the realm for a host.
+    # Typically set to false in an AD environment as the realm is fixed.
+    dns_lookup_realm = false
 
-    // Forwarders if not set during samba-tool provision or if you want to change them
-    forwarders {
-        1.1.1.1;
-        1.0.0.1;
-    };
-    forward only; // Or "forward first;"
-    // Allow queries from your LANs
-    allow-query { localhost; localnets; 192.168.10.0/24; 192.168.20.0/24; 172.16.0.0/16; };
-    // Allow recursion for your clients
-    allow-recursion { localhost; localnets; 192.168.10.0/24; 192.168.20.0/24; 172.16.0.0/16; };
-};
-```
-*(The `include "/var/lib/samba/bind-dns/named.conf";` line is crucial. AppArmor fix is also important.)*
+    # Time synchronization is critical for Kerberos.
+    # This tells the client to check time difference with KDC.
+    kdc_timesync = 1
 
-Adjust AppArmor for BIND9:
-```bash
-# Option 1: Set BIND to complain mode (less secure, for troubleshooting)
-# sudo aa-complain /usr/sbin/named
+    # Standard ticket cache type.
+    ccache_type = 4
 
-# Option 2: Edit the AppArmor profile (recommended)
-sudo nano /etc/apparmor.d/usr.sbin.named
-```
-Add these lines within the profile, usually before the final `}`:
-```
-  # Samba BIND9_DLZ requirements
-  /var/lib/samba/private/dns/** rwk,
-  /var/lib/samba/bind-dns/** rwk,
-  /var/lib/samba/bind-dns/dns.keytab rk,
-```
-Then reload AppArmor profile:
-```bash
-sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.named
+    # Allow tickets to be forwardable (necessary for many services).
+    forwardable = true
+
+    # Allow tickets to be proxiable.
+    proxiable = true
+
+    # Disable reverse DNS lookups for KDC hostnames, can improve performance
+    # and avoid issues if rDNS isn't perfectly configured.
+    rdns = false
+
+    # For compatibility with MIT Kerberos ticket flags.
+    fcc-mit-ticketflags = true
+
+    # OPTIONAL: Explicitly define strong encryption types.
+    # Samba AD supports AES by default. This ensures clients prefer/require them.
+    # Order matters: strongest preferred first.
+    default_tgs_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+
+    # OPTIONAL: Adjust ticket lifetimes if needed (defaults are usually 10h ticket, 7d renew).
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+
+[realms]
+    # Define specifics for your realm.
+    # If dns_lookup_kdc = true, the 'kdc' and 'admin_server' lines here
+    # act as a fallback or can be omitted if SRV records are reliably found.
+    # However, it's good practice to list your primary ones.
+    SMOKE-BREAK.LAN = {
+        default_domain = smoke-break.lan
+        # List your Key Distribution Centers (Domain Controllers).
+        # If dns_lookup_kdc = true, these are fallbacks.
+        # If dns_lookup_kdc = false, these are the ONLY KDCs that will be used.
+        kdc = dns1.smoke-break.lan
+        # Add your secondary DC when it's operational
+
+        # Server for kadmin (Kerberos administration tool).
+        admin_server = dns1.smoke-break.lan # Usually the primary DC
+    }
+
+[domain_realm]
+    # Maps DNS domain names to Kerberos realms.
+    .smoke-break.lan = SMOKE-BREAK.LAN
+    smoke-break.lan = SMOKE-BREAK.LAN
+
+# OPTIONAL: For detailed Kerberos client-side logging (useful for troubleshooting)
+# [logging]
+#  default = FILE:/var/log/krb5libs.log
+#  kdc = FILE:/var/log/krb5kdc.log        # Not used by clients, but KDCs can use this
+#  admin_server = FILE:/var/log/kadmind.log # Not used by clients
+
 ```
 
 Finalize `/etc/resolv.conf` for the DC itself:
 ```bash
-sudo rm /etc/resolv.conf
+sudo rm -f /etc/resolv.conf
 echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 echo "search smoke-break.lan" | sudo tee -a /etc/resolv.conf
-sudo chattr +i /etc/resolv.conf # Make immutable to prevent overwrites by DHCP clients etc.
+sudo chattr +i /etc/resolv.conf # Make immutable to prevent overwrites
 ```
 
 Start and enable services:
 ```bash
 sudo systemctl unmask samba-ad-dc # If it was masked
-sudo systemctl start samba-ad-dc bind9
-sudo systemctl enable samba-ad-dc bind9 # alias named!
-# sudo systemctl status samba-ad-dc bind9 # Check status
+sudo systemctl start samba-ad-dc
+sudo systemctl enable samba-ad-dc
+# sudo systemctl status samba-ad-dc # Check status
 ```
 Reboot for good measure:
 ```bash
@@ -596,8 +663,10 @@ _kerberos._udp.smoke-break.lan has SRV record 0 100 88 dns1.smoke-break.lan.
 dns1.smoke-break.lan has address 192.168.10.101
 ```
 
-### Configure the Firewall (Server 1 - `dns1`)
+### Configure the Firewall
+The firewall rules remain the same as Samba's internal DNS still uses the standard DNS ports.
 ```bash
+sudo ufw allow 22/tcp         # SSH
 sudo ufw allow 53/tcp         # DNS
 sudo ufw allow 53/udp         # DNS
 sudo ufw allow 88/tcp         # Kerberos
@@ -630,8 +699,8 @@ Ensure `/etc/hosts` looks like this:
 ```plaintext
 127.0.0.1       localhost
 192.168.20.101  dns2.smoke-break.lan dns2
-# The following line may be added by systemd-hostnamed or similar, ensure it matches or remove if redundant with above
-# 127.0.1.1       dns2.smoke-break.lan dns2
+# Add primary DC for easier resolution during join if needed, though DNS should handle it
+192.168.10.101  dns1.smoke-break.lan dns1
 ```
 
 ### Join the Domain (Server 3)
@@ -642,7 +711,7 @@ sudo systemctl disable smbd nmbd winbind systemd-resolved
 ```
 Configure `/etc/resolv.conf` to point to the Primary DC (`dns1`) for the join process:
 ```bash
-sudo rm /etc/resolv.conf
+sudo rm -f /etc/resolv.conf
 echo "nameserver 192.168.10.101" | sudo tee /etc/resolv.conf # Point to dns1
 echo "search smoke-break.lan" | sudo tee -a /etc/resolv.conf
 ```
@@ -652,50 +721,67 @@ sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak # If it exists
 ```
 Join the domain as a DC:
 ```bash
-sudo samba-tool domain join smoke-break.lan DC -U"SMOKE-BREAK\administrator" --dns-backend=BIND9_DLZ
-# Or: sudo samba-tool domain join smoke-break.lan DC --username=administrator --dns-backend=BIND9_DLZ
+# Use --dns-backend=SAMBA_INTERNAL if it's an older Samba version that doesn't default correctly on join
+# Modern Samba should pick up the existing domain's DNS type.
+sudo samba-tool domain join smoke-break.lan DC -U"SMOKE-BREAK\administrator"
+# Or: sudo samba-tool domain join smoke-break.lan DC --username=administrator
 ```
 Enter the Administrator password when prompted.
+
+A robust smb.conf for `dns2`:
+
+```ini 
+# Global parameters
+[global]
+        # --- Basic AD DC Settings ---
+        netbios name = DNS2
+        realm = SMOKE-BREAK.LAN
+        workgroup = SMOKE-BREAK
+        server role = active directory domain controller
+
+        # --- DNS Configuration ---
+        dns forwarder = 1.1.1.1
+        # Alternatively, if DNS1 is stable:
+        # dns forwarder = dns1.smoke-break.lan
+        allow dns updates = secure
+
+        # --- Logging (adjust levels as needed for troubleshooting) ---
+        log file = /var/log/samba/log.%m
+        max log size = 50000 
+        logging = file
+        log level = 1 
+        # Default production level; increase for debugging (e.g., 3 or higher)
+        # For very verbose DNS debugging on this DC:
+        # dns:log level = 5
+[sysvol]
+        path = /var/lib/samba/sysvol
+        read only = No
+
+[netlogon]
+        path = /var/lib/samba/sysvol/smoke-break.lan/scripts
+        read only = No
+```
 
 Copy Samba's Kerberos config (should be replicated, but good to ensure):
 ```bash
 sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 ```
-
-### Configure BIND9 (Server 3)
-Same BIND9 configuration steps as for Server 1 regarding `named.conf.local` (or `named.conf`) and `named.conf.options`.
-```bash
-sudo nano /etc/bind/named.conf.local # Or your main named.conf or included file
-```
-Add: `include "/var/lib/samba/bind-dns/named.conf";`
-
-```bash
-sudo nano /etc/bind/named.conf.options
-```
-Ensure `tkey-gssapi-keytab "/var/lib/samba/bind-dns/dns.keytab";` is present.
-Forwarders should also be set (e.g., `1.1.1.1`, `1.0.0.1`).
-Also add `allow-query` and `allow-recursion` as on `dns1`.
-
-Adjust AppArmor as on Server 1.
-```bash
-sudo nano /etc/apparmor.d/usr.sbin.named # Add same paths
-sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.named
-```
+[Configure Kerberos](#configure-kerberos) like in Server 1 (`dns1`)
 
 Finalize `/etc/resolv.conf` for `dns2`:
 ```bash
-sudo rm /etc/resolv.conf
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf       # Primary: itself
+sudo rm -f /etc/resolv.conf
+echo "search smoke-break.lan" | sudo tee /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee -a /etc/resolv.conf       # Primary: itself
 echo "nameserver 192.168.10.101" | sudo tee -a /etc/resolv.conf # Secondary: dns1
-echo "search smoke-break.lan" | sudo tee -a /etc/resolv.conf
 sudo chattr +i /etc/resolv.conf
 ```
 
 Start and enable services:
 ```bash
 sudo systemctl unmask samba-ad-dc
-sudo systemctl start samba-ad-dc bind9
-sudo systemctl enable samba-ad-dc bind9
+sudo systemctl start samba-ad-dc
+sudo systemctl enable samba-ad-dc
 ```
 Reboot:
 ```bash
@@ -705,83 +791,46 @@ sudo reboot
 ### Test Secondary DC (Server 3 - `dns2`)
 After reboot:
 ```bash
-host -t SRV _ldap._tcp.smoke-break.lan. # Should now show both dns1 and dns2
+host -t SRV _ldap._tcp.smoke-break.lan.  
 host -t A dns2.smoke-break.lan.
 kinit administrator
 klist
 ```
+> [!TIP]
+> You should get a successful response with no connection refused errors, listing both dns1 and dns2 as LDAP servers.
+
 On `dns1`, also test `host -t SRV _ldap._tcp.smoke-break.lan.` to see if `dns2` is listed.
 Check replication:
 ```bash
 sudo samba-tool drs showrepl
 ```
 
-### Configure Firewall (Server 3 - `dns2`)
-Apply the same `ufw` rules as for Server 1.
+### Configure Firewall 
+Apply the same `ufw` rules as for [Server 1](#configure-the-firewall).
 
-## 4. Client Configuration & Joining Domain
-
-Install the Windows client VMs (`Win - Client 1` and `Win - Client 2`):
-- `Win - Client 1` connected to `PrivateSwitch 1`.
-- `Win - Client 2` connected to `PrivateSwitch 3`. 
-
-Configure static IP addresses on Windows clients:
-
-**Client 1 (on `PrivateSwitch 1`):**
-- IP Address: `192.168.10.50`
-- Netmask: `255.255.255.0` (or `/24`)
-- Gateway: `192.168.10.254` (Router 1)
-- **Primary DNS:** `192.168.10.101` (`dns1`)
-- **Secondary DNS:** `192.168.20.101` (`dns2`)
-
-**Client 2 (on `PrivateSwitch 3`):**
-- IP Address: `192.168.20.50`
-- Netmask: `255.255.255.0` (or `/24`)
-- Gateway: `192.168.20.254` (Router 2)
-- **Primary DNS:** `192.168.20.101` (`dns2`)
-- **Secondary DNS:** `192.168.10.101` (`dns1`)
-
-### Joining Windows Clients to `smoke-break.lan` Domain
-1.  On a Windows client, open System Properties (`sysdm.cpl`).
-2.  Click "Change..." under Computer Name tab.
-3.  Under "Member of", select "Domain:" and type `smoke-break.lan`.
-4.  Click OK. You'll be prompted for credentials. Use `SMOKE-BREAK\administrator` and the password you set during Samba provision.
-5.  If successful, you'll be welcomed to the domain and prompted to restart.
-
-## Troubleshooting AD/DNS
+## Troubleshooting AD/DNS (Samba Internal DNS)
 If you encounter issues:
-1.  **Time Synchronization:** Ensure NTP is working on all DCs and clients. `timedatectl status`. Kerberos is very sensitive to time differences.
+1.  **Time Synchronization:** Ensure NTP is working on all DCs and clients. `timedatectl status`.
 2.  **Service Status:**
     ```bash
-    sudo systemctl status samba-ad-dc bind9 ntp # Check ntp too
+    sudo systemctl status samba-ad-dc chrony # Check chrony too
     journalctl -xeu samba-ad-dc # Detailed logs for samba
-    journalctl -xeu bind9       # Detailed logs for bind9
     ```
 3.  **Samba Logs:**
     ```bash
     sudo tail -f /var/log/samba/log.samba # General samba log
-    # Samba keeps logs per process, explore /var/log/samba/ for more details
+    # Samba keeps logs per process, explore /var/log/samba/ for more details, especially log.samba-dns
     ```
-4.  **BIND9 Logs:** Often in `/var/log/syslog` or `/var/log/messages` if not configured for a separate file. Check `named.conf` for log file locations.
-    ```bash
-    sudo tail -f /var/log/syslog | grep named
-    ```
-5.  **Connectivity & DNS Resolution:**
+4.  **Connectivity & DNS Resolution:**
     ```bash
     ping dns1.smoke-break.lan
     ping dns2.smoke-break.lan
     nslookup smoke-break.lan # Should return IPs of both DCs
     nslookup -type=SRV _ldap._tcp.smoke-break.lan # Check SRV records
     ```
-6.  **Samba Domain/Replication Info:**
+5.  **Samba Domain/Replication/DNS Info:**
     ```bash
     sudo samba-tool domain info SMOKE-BREAK.LAN # Use REALM
     sudo samba-tool drs showrepl # Check replication status between DCs
-    sudo samba-tool dns query <primary_dc_hostname> <your_domain_REALM> @ ALL # Query all DNS records
+    sudo samba-tool dns query <primary_dc_hostname> smoke-break.lan @ ALL -Uadministrator # Query all DNS records via Samba
     ```
-7.  **AppArmor:** If BIND9 fails to load zones or write to log files, check AppArmor:
-    ```bash
-    sudo dmesg | grep DENIED | grep named
-    # Or check /var/log/audit/audit.log if auditd is installed
-    ```
-    If you see AppArmor denials, refine the profile in `/etc/apparmor.d/usr.sbin.named` and reload.
