@@ -393,13 +393,13 @@ ping -c 3 1.1.1.1         # Ping the internet (tests default route and NAT throu
   <a href="#internal-ca-setup">Internal CA Setup</a> •
   <a href="#reverse-dns-zone-setup">Reverse DNS Zone</a>
 </p>
-This section details how to configure two Ubuntu servers as Active Directory Domain Controllers using Samba. We will use `Linux - AD_DNS 1` as the Primary DC (`dns1`) and `Linux - Server 3` as the Secondary DC (`dns2`).
+This section details how to configure two Ubuntu servers as Active Directory Domain Controllers using Samba. We will use `Linux - AD_DNS 1` as the Primary DC (`dns1`) and `Linux - AD_DNS 2` as the Secondary DC (`dns2`).
 
 ### 1. Initial VM & Network Preparation
 
 1.  **Network Connections**:
     *   Connect `Linux - AD_DNS 1` VM to `PrivateSwitch 1`.
-    *   Connect `Linux - Server 3` VM to `PrivateSwitch 3`.
+    *   Connect `Linux - AD_DNS 2` VM to `PrivateSwitch 3`.
 
 2.  **Static IP Configuration (During Ubuntu Install)**:
     It is critical that Domain Controllers have static IP addresses. Configure this during the OS installation.
@@ -701,7 +701,7 @@ sudo ufw status verbose
 
 <h3 id="dns2-setup">Secondary Domain Controller Setup (`dns2`)</h3>
 
-Perform these steps only on `Linux - Server 3`.
+Perform these steps only on `Linux - AD_DNS 2`.
 
 #### Step 1: Configure Hostname and Hosts File
 ```bash
@@ -874,30 +874,36 @@ Paste the following configuration into `openssl.cnf`:
 *(This is a standard configuration for a simple CA. Adapt the `[req_distinguished_name]` defaults if desired.)*
 ```ini
 [ ca ]
-default_ca = CA_default
-
+default_ca = CA_default                     # Tells OpenSSL which section below has the main CA settings.
+# Defines where all the CA's working files and folders are
+# Helps OpenSSL find everything it needs.
 [ CA_default ]
-dir               = /root/internal-ca
-certs             = $dir/certs
-crl_dir           = $dir/crl
-database          = $dir/index.txt
-new_certs_dir     = $dir/newcerts
+dir               = /root/internal-ca       # Main CA folder we created
+certs             = $dir/certs              # Folder for issued certificates
+crl_dir           = $dir/crl                # Folder for certificate revocation lists
+database          = $dir/index.txt          # The 'database' of issued certs
+new_certs_dir     = $dir/newcerts           # Folder for newly created certs
 certificate       = $dir/cacert.pem         # The CA certificate
 serial            = $dir/serial             # The current serial number
 crl               = $dir/crl.pem            # The current CRL
 private_key       = $dir/private/cakey.pem  # The private key
 RANDFILE          = $dir/private/.rand      # Private random number file
 
-x509_extensions   = usr_cert
-name_opt          = ca_default
-cert_opt          = ca_default
+# Sets default options for certificates issued by this CA.
+# Ensures consistency for all issued certificates.
+x509_extensions   = usr_cert                # Default extensions for user certificates
+name_opt          = ca_default              # Formatting options for names
+cert_opt          = ca_default              # Formatting options for certificates
 default_days      = 1825                    # How long to certify for (5 years)
 default_crl_days  = 30                      # How long before next CRL
 default_md        = sha256                  # Use SHA-256 for Signatures
-preserve          = no
-policy            = policy_match
+preserve          = no                      # Don't preserve old field values in requests
+policy            = policy_match            # Which policy section to use for matching certificate request info
 
-[ policy_match ]
+# Defines rules for information in certificate requests.
+# 'match' means the info in the request must match the CA's info. 'supplied' means it must be provided. 'optional' means it's not required.
+# Ensures certificate requests have the necessary information.
+[ policy_match ] # In Use
 countryName             = match
 stateOrProvinceName     = match
 organizationName        = match
@@ -915,11 +921,11 @@ commonName              = supplied
 emailAddress            = optional
 
 [ req ]
-default_bits        = 2048 # Adjusted from 4096 for faster lab certs if preferred, 2048 is still strong
-default_keyfile     = privkey.pem
+default_bits        = 2048                      # Default key strength, djusted from 4096 for faster lab certs if preferred, 2048 is still strong
+default_keyfile     = privkey.pem               # Default name for new private keys
 distinguished_name  = req_distinguished_name
 attributes          = req_attributes
-x509_extensions     = v3_ca # The extensions to add to the self signed cert
+x509_extensions     = v3_ca                     # The extensions to add to the self signed cert
 
 [ req_distinguished_name ]
 countryName                     = Country Name (2 letter code)
@@ -946,13 +952,13 @@ nsComment = "OpenSSL Generated Certificate"
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
 
-[ v3_ca ]
+[ v3_ca ] # Settings for the CA's own certificate
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always,issuer
 basicConstraints = critical, CA:true
 keyUsage = critical, digitalSignature, cRLSign, keyCertSign
 
-[ server_cert ]
+[ server_cert ] # Settings specific for server certificates (like for our web/mail servers)
 basicConstraints = CA:FALSE
 nsCertType = server
 nsComment = "OpenSSL Generated Server Certificate"
@@ -1160,7 +1166,7 @@ sudo samba-tool dns add dns1.smoke-break.lan 20.168.192.in-addr.arpa 101 PTR dns
   <h2 id="dhcp-server-setup">DHCP Server Setup</h2>
 </div>
 
-This guide details setting up a central DHCP server on `Linux - Server 2` (`dhcp1`) to serve IPs for both `192.168.10.0/24` (Building 1) and `192.168.20.0/24` (Building 2) subnets. Router 2 will be configured as a DHCP Relay to forward requests from Building 2.
+This guide details setting up a central DHCP server on `Linux - DHCP Server` (`dhcp`) to serve IPs for both `192.168.10.0/24` (Building 1) and `192.168.20.0/24` (Building 2) subnets. Router 2 will be configured as a DHCP Relay to forward requests from Building 2.
 
 <p align="center">
   <a href="#dhcp-server-preparation">Server Preparation</a> •
@@ -1168,9 +1174,9 @@ This guide details setting up a central DHCP server on `Linux - Server 2` (`dhcp
   <a href="#configure-dhcp-relay-on-router-2">DHCP Relay Configuration</a>
 </p>
 
-<h3 id="dhcp-server-preparation">1. DHCP Server Preparation (`dhcp1`)</h3>
+<h3 id="dhcp-server-preparation">1. DHCP Server Preparation (`dhcp`)</h3>
 
-1.  **Network Connection**: Ensure `Linux - Server 2` (`dhcp1`) is connected to `PrivateSwitch 1`.
+1.  **Network Connection**: Ensure `Linux - DHCP Server` (`dhcp`) is connected to `PrivateSwitch 1`.
 
 2.  **Static IP Configuration (During Install or via Netplan post-install)**: A DHCP server needs a static IP.
     *   **Subnet:** `192.168.10.0/24`
@@ -1180,18 +1186,18 @@ This guide details setting up a central DHCP server on `Linux - Server 2` (`dhcp
     *   **Search Domain:** `smoke-break.lan`
 
 > [!IMPORTANT]
-> The DNS servers configured for `dhcp1` **must** point to your Active Directory controllers (`dns1` and `dns2`). This is for the DHCP server itself; the DHCP *scopes* will also provide these DNS servers to clients.
+> The DNS servers configured for `dhcp` **must** point to your Active Directory controllers (`dns1` and `dns2`). This is for the DHCP server itself; the DHCP *scopes* will also provide these DNS servers to clients.
 
 3.  **Initial System Setup**: After OS installation and static IP configuration:
     ```bash
     sudo apt update && sudo apt full-upgrade -y
     sudo apt install -y nano ufw # Ensure nano and ufw are installed
-    sudo hostnamectl set-hostname dhcp1.smoke-break.lan # Changed to dhcp1 for consistency
-    # Add to /etc/hosts: 192.168.10.102 dhcp1.smoke-break.lan dhcp1
+    sudo hostnamectl set-hostname dhcp.smoke-break.lan # Changed to dhcp for consistency
+    # Add to /etc/hosts: 192.168.10.102 dhcp.smoke-break.lan dhcp
     sudo reboot
     ```
 
-<h3 id="install-and-configure-isc-dhcp-server">2. Install and Configure ISC-DHCP-SERVER (on `dhcp1`)</h3>
+<h3 id="install-and-configure-isc-dhcp-server">2. Install and Configure ISC-DHCP-SERVER (on `dhcp`)</h3>
 
 #### Step 1: Install the DHCP Server Package
 ```bash
@@ -1263,7 +1269,7 @@ sudo systemctl status isc-dhcp-server
 
 <h3 id="configure-dhcp-relay-on-router-2">3. Configure DHCP Relay on Router 2</h3>
 
-Router 2 needs to forward DHCP broadcast requests from its local network (`192.168.20.0/24` on `PrivateSwitch 3`) to the central DHCP server (`dhcp1` at `192.168.10.102`).
+Router 2 needs to forward DHCP broadcast requests from its local network (`192.168.20.0/24` on `PrivateSwitch 3`) to the central DHCP server (`dhcp` at `192.168.10.102`).
 
 #### Step 1: Install the Relay Agent (on `router2`)
 ```bash
@@ -1277,7 +1283,7 @@ sudo apt install -y isc-dhcp-relay
 sudo nano /etc/default/isc-dhcp-relay
 ```
 Modify the file with the following information.
-*   `SERVERS`: The IP address of your central DHCP server (`dhcp1`).
+*   `SERVERS`: The IP address of your central DHCP server (`dhcp`).
 *   `INTERFACES`: The interface on `router2` that listens for DHCP requests from clients in Building 2 (connected to `PrivateSwitch 3`). This should be `eth1` based on your Router 2 Netplan config.
 *   `OPTIONS`: Can be used to pass options to the dhcrelay daemon, usually not needed for basic setup.
 
@@ -1335,7 +1341,7 @@ Ensure the network adapter settings within Windows on both client VMs are config
 *   **"Obtain an IP address automatically"**
 *   **"Obtain DNS server address automatically"**
 
-Our DHCP server (`dhcp1`) will provide the correct IP address, gateway, and AD DNS server addresses.
+Our DHCP server (`dhcp`) will provide the correct IP address, gateway, and AD DNS server addresses.
 
 <h3 id="client-network-verification">2. Network Verification (On each Windows Client)</h3>
 
