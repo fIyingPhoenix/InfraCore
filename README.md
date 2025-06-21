@@ -727,6 +727,7 @@ Configure `/etc/resolv.conf` to point to the Primary DC (`dns1`) for the join pr
 sudo rm -f /etc/resolv.conf # Remove if it's a symlink
 echo "search smoke-break.lan" | sudo tee /etc/resolv.conf
 echo "nameserver 192.168.10.101" | sudo tee -a /etc/resolv.conf # Point to dns1
+sudo chattr +i /etc/resolv.conf
 ```
 Backup existing Samba config (if any):
 ```bash
@@ -791,15 +792,37 @@ Edit `/etc/krb5.conf` on `dns2` to be similar to `dns1`'s, but ensure `dns2` is 
 ```bash
 sudo nano /etc/krb5.conf
 ```
-Modify the `[realms]` section:
 ```ini
+[libdefaults]
+    default_realm = SMOKE-BREAK.LAN
+    dns_lookup_kdc = true
+    dns_lookup_realm = true
+    kdc_timesync = 1
+    ccache_type = 4
+    forwardable = true
+    proxiable = true
+    rdns = false
+
+    fcc-mit-ticketflags = true
+    default_tgs_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+
 [realms]
-    SMOKE-BREAK.LAN = {
         default_domain = smoke-break.lan
         kdc = dns1.smoke-break.lan
-        kdc = dns2.smoke-break.lan # Add dns2 here
-        admin_server = dns1.smoke-break.lan # Typically the first DC
+        kdc = dns2.smoke-break.lan
+        # Server for kadmin (Kerberos administration tool).
+        admin_server = dns1.smoke-break.lan # Usually the primary DC
     }
+
+[domain_realm]
+    # Maps DNS domain names to Kerberos realms.
+    .smoke-break.lan = SMOKE-BREAK.LAN
+    smoke-break.lan = SMOKE-BREAK.LAN
 ```
 Ensure the rest of the file matches the robust configuration used on `dns1` (encryption types, etc.).
 
@@ -1131,11 +1154,11 @@ sudo apt install ldap-utils
 ```
 Test LDAPS against `dns1`:
 ```bash
-ldapsearch -H ldaps://dns1.smoke-break.lan -x -b "dc=smoke-break,dc=lan" -LLL "(objectClass=user)" cn
+sudo ldapsearch -H ldaps://dns1.smoke-break.lan -x -D "CN=Administrator,CN=Users,DC=smoke-break,DC=lan" -W -b "DC=smoke-break,DC=lan" -LLL "(objectClass=user)" cn
 ```
 Test LDAPS against `dns2`:
 ```bash
-ldapsearch -H ldaps://dns2.smoke-break.lan -x -b "dc=smoke-break,dc=lan" -LLL "(objectClass=user)" cn
+sudo ldapsearch -H ldaps://dns2.smoke-break.lan -x -D "CN=Administrator,CN=Users,DC=smoke-break,DC=lan" -W -b "DC=smoke-break,DC=lan" -LLL "(objectClass=user)" cn
 ```
 If successful, you should see a list of users (e.g., Administrator, krbtgt) without certificate errors.
 
@@ -1394,4 +1417,842 @@ After the client VM restarts, it is now a member of the domain.
 
 **Congratulations!** You are now logged into the Windows client using an account managed by your Linux-based Active Directory. Repeat the process for the second Windows client.
 
---- END OF FILE README.md ---
+<div align="center">
+  <h2 id="mail-server-setup">Mail Server Setup (Postfix, Dovecot, LDAPS)</h2>
+</div>
+
+This section details how to set up an internal mail server (`mail.smoke-break.lan`) using Postfix as the Mail Transfer Agent (MTA) and Dovecot for IMAP/POP3 access and SASL authentication for Postfix. User authentication will be handled via LDAPS against your Samba Active Directory.
+
+<p align="center">
+  <a href="#mail-vm-preparation">VM Preparation</a> •
+  <a href="#mail-trust-ca">Trust Internal CA</a> •
+  <a href="#mail-server-certificate">Server Certificate</a> •
+  <a href="#mail-ldap-bind-account">LDAP Bind Account</a> •
+  <a href="#mail-install-software">Install Software</a> •
+  <a href="#mail-postfix-config">Postfix Config</a> •
+  <a href="#mail-dovecot-config">Dovecot Config</a> •
+  <a href="#mail-firewall">Firewall</a> •
+  <a href="#mail-dns-records">DNS Records</a> •
+  <a href="#mail-testing">Testing</a>
+</p>
+
+This setup is intended for **internal mail only**.
+
+<h3 id="mail-vm-preparation">1. Mail Server VM Preparation</h3>
+
+1.  **Create VM**: Set up a new Ubuntu Server 24.04 LTS VM named `Linux - Mail Server`.
+2.  **Network Connection**: Connect the VM to `PrivateSwitch 1`.
+3.  **Static IP Configuration**:
+    *   **IP Address**: `192.168.10.103`
+    *   **Subnet Mask**: `255.255.255.0` (or `/24`)
+    *   **Gateway**: `192.168.10.254`
+    *   **DNS Servers**: `192.168.10.101, 192.168.20.101` (Your AD DNS servers)
+    *   **Search Domain**: `smoke-break.lan`
+4.  **Hostname**: Set the hostname to `mail.smoke-break.lan`.
+    ```bash
+    sudo hostnamectl set-hostname mail.smoke-break.lan
+    echo "127.0.0.1 localhost" | sudo tee /etc/hosts
+    echo "192.168.10.103 mail.smoke-break.lan mail" | sudo tee -a /etc/hosts
+    sudo reboot
+    ```
+5.  **System Update**:
+    ```bash
+    sudo apt update && sudo apt full-upgrade -y
+    sudo apt install -y nano ufw
+    ```
+6.  **(Placeholder) OS Installation Guide**: For detailed OS installation steps, refer to [UbuntuServerInstall.md](UbuntuServerInstall.md) (assuming a similar guide exists or will be created).
+
+<h3 id="mail-trust-ca">2. Trust the Internal CA on Mail Server</h3>
+
+The mail server needs to trust certificates signed by your internal CA (`Smoke Break LAN Root CA`).
+
+1.  **Copy CA Certificate**: On `dns1` (your CA server), copy the CA's public certificate to the mail server.
+    ```bash
+    # On dns1:
+    sudo scp /root/internal-ca/cacert.pem your_user@192.168.10.103:/tmp/InternalSmokeBreakCA.pem
+    ```
+2.  **Install CA Certificate on Mail Server**:
+    ```bash
+    # On mail.smoke-break.lan:
+    sudo cp /tmp/InternalSmokeBreakCA.pem /usr/local/share/ca-certificates/
+    sudo update-ca-certificates
+    ```
+    Verify by checking for your CA in `/etc/ssl/certs/ca-certificates.crt`.
+
+<h3 id="mail-server-certificate">3. Generate and Install Server Certificate for Mail Server</h3>
+
+The mail server needs its own SSL/TLS certificate for secure connections (LDAPS client, IMAPS, SMTPS).
+
+#### 3a. Generate Private Key and CSR on `mail.smoke-break.lan`
+```bash
+# On mail.smoke-break.lan:
+HOSTNAME_FQDN=$(hostname -f) # mail.smoke-break.lan
+sudo mkdir -p /etc/ssl/private
+sudo mkdir -p /etc/ssl/certs
+
+# Generate private key
+sudo openssl genrsa -out /etc/ssl/private/${HOSTNAME_FQDN}-key.pem 2048
+
+# Create CSR
+sudo openssl req -new -key /etc/ssl/private/${HOSTNAME_FQDN}-key.pem \
+     -out /tmp/${HOSTNAME_FQDN}.csr \
+     -subj "/C=DE/ST=Reinstated Pfalz/L=Trier/O=Smoke Break LAN/OU=Mail Services/CN=${HOSTNAME_FQDN}"
+```
+
+#### 3b. Copy CSR to CA Server (`dns1`)
+```bash
+# On mail.smoke-break.lan:
+scp /tmp/${HOSTNAME_FQDN}.csr your_user@dns1.smoke-break.lan:/tmp/
+```
+
+#### 3c. Sign CSR on `dns1` (CA Server)
+Log into `dns1` as `root` or use `sudo su -`.
+```bash
+# On dns1 (as root):
+cd /root/internal-ca
+HOSTNAME_FQDN=mail.smoke-break.lan # Manually set for clarity
+
+openssl ca -config openssl.cnf -extensions server_cert -days 365 -notext -md sha256 \
+    -in /tmp/${HOSTNAME_FQDN}.csr -out certs/${HOSTNAME_FQDN}-cert.pem
+```
+Enter CA passphrase and confirm.
+
+#### 3d. Copy Signed Certificate and CA Certificate to `mail.smoke-break.lan`
+```bash
+# On dns1 (as your_user or root):
+HOSTNAME_FQDN=mail.smoke-break.lan
+scp /root/internal-ca/certs/${HOSTNAME_FQDN}-cert.pem your_user@192.168.10.103:/tmp/
+```
+
+#### 3e. Install Certificates on `mail.smoke-break.lan`
+```bash
+# On mail.smoke-break.lan:
+HOSTNAME_FQDN=$(hostname -f)
+sudo cp /tmp/${HOSTNAME_FQDN}-cert.pem /etc/ssl/certs/${HOSTNAME_FQDN}-cert.pem
+sudo cp /tmp/InternalSmokeBreakCA.pem  /etc/ssl/certs/InternalSmokeBreakCA.pem # Separate copy for services to point to
+
+# Set permissions
+sudo chmod 644 /etc/ssl/certs/${HOSTNAME_FQDN}-cert.pem
+sudo chmod 600 /etc/ssl/private/${HOSTNAME_FQDN}-key.pem
+sudo chown root:root /etc/ssl/private/${HOSTNAME_FQDN}-key.pem
+sudo chown root:root /etc/ssl/certs/${HOSTNAME_FQDN}-cert.pem
+sudo chown root:root /etc/ssl/certs/InternalSmokeBreakCA.pem 
+```
+
+<h3 id="mail-ldap-bind-account">4. Create LDAP Bind Account in Active Directory</h3>
+
+For services like Postfix and Dovecot to query AD for users, it's best practice to use a dedicated service account with limited permissions (read-only for user attributes).
+
+On `dns1` (or any DC):
+```bash
+sudo samba-tool ou create "OU=ServiceAccounts" # If it doesn't exist
+# Note: You might need to specify the full DN(Distinguished Name) for the OU(Organizational Unit) if it's not at the root, e.g., "OU=ServiceAccounts,DC=smoke-break,DC=lan"
+
+sudo samba-tool user create ldap-binder --description="LDAP Bind Account for Mail/Nextcloud" \
+    --mail-address="ldap-binder@smoke-break.lan" \
+    --given-name="LDAP" --surname="Binder" \
+    --userou="OU=ServiceAccounts" # Or full DN to OU
+    # You will be prompted to set a password. Use a strong, unique password and save it securely.
+```
+This account `ldap-binder` will be used by Dovecot to connect to AD. No special AD permissions are needed beyond authenticated read of user attributes.
+
+<h3 id="mail-install-software">5. Install Postfix and Dovecot</h3>
+
+```bash
+# On mail.smoke-break.lan:
+sudo apt update
+sudo apt install -y postfix postfix-ldap dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-ldap
+```
+
+During Postfix installation:
+*   Select **Internet Site**.
+*   System mail name: `mail.smoke-break.lan` (or just `smoke-break.lan` if users will have `user@smoke-break.lan` addresses. For consistency `mail.smoke-break.lan` is fine as the FQDN of the server, the domain part of email addresses is configured separately). Let's use `smoke-break.lan` for user email addresses. Set to `smoke-break.lan`.
+
+<h3 id="mail-postfix-config">6. Postfix Configuration</h3>
+
+#### 6a. Main Configuration (`/etc/postfix/main.cf`)
+Backup the original: `sudo cp /etc/postfix/main.cf /etc/postfix/main.cf.bak`
+Edit `sudo nano /etc/postfix/main.cf`. Replace with or adapt to the following:
+```ini
+# See /usr/share/postfix/main.cf.dist for a commented, more complete version
+
+#
+# Basic Settings
+#
+# The hostname of this mail server.
+myhostname = mail.smoke-break.lan
+# The domain name that appears in mail addresses for local users (e.g., user@mydomain.com).
+mydomain = smoke-break.lan
+# The sender domain for locally posted mail. Defaults to $myhostname.
+# For internal mail, using $mydomain is common for user-friendly addresses.
+myorigin = $mydomain
+# List of domains this server considers itself the final destination for.
+# Apart from $myhostname and localhost, include $mydomain.
+mydestination = $myhostname, localhost.$mydomain, localhost
+# Networks that are allowed to relay mail through this server.
+# For an internal server, usually only localhost and trusted local subnets.
+# Since clients will authenticate via SASL, restricting relaying is important.
+# 127.0.0.0/8 for local services. Add other trusted networks if necessary.
+mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128 192.168.10.0/24 192.168.20.0/24
+# The network interfaces Postfix should listen on for incoming mail. 'all' is common.
+inet_interfaces = all
+# The protocol versions to use. 'all' enables both IPv4 and IPv6 if available.
+inet_protocols = all
+# Recipient address delimiter. '+' is common for sub-addressing (user+tag@domain.com).
+recipient_delimiter = +
+
+compatibility_level = 3.6
+
+#
+# TLS Settings for Incoming and Outgoing Connections
+#
+# Enable SMTPS (SMTP over SSL/TLS on port 465) and STARTTLS on port 25.
+# Path to the server's SSL certificate file.
+smtpd_tls_cert_file = /etc/ssl/certs/mail.smoke-break.lan-cert.pem
+# Path to the server's private key file.
+smtpd_tls_key_file = /etc/ssl/private/mail.smoke-break.lan-key.pem
+# Enable TLS usage for incoming connections.
+smtpd_use_tls = yes
+# Log level for TLS activity. '1' gives basic info, '2' more detail.
+smtpd_tls_loglevel = 1
+# Path to the CA certificate bundle file used to verify client certificates (if client cert auth is used).
+# Not strictly required for server-side TLS encryption alone but good practice.
+smtpd_tls_CAfile = /etc/ssl/certs/InternalSmokeBreakCA.pem
+# Prevent use of anonymous (unencrypted) or weak SSL/TLS ciphers.
+smtpd_tls_security_level = may
+# Modern TLS protocols to prefer.
+smtpd_tls_protocols =!TLSv1.3, !TLSv1.2
+smtpd_tls_mandatory_protocols = !TLSv1.3, !TLSv1.2
+# Strong cipher list.
+smtpd_tls_ciphers = high
+smtpd_tls_mandatory_ciphers = high
+# Enable Perfect Forward Secrecy (PFS) by using Elliptic Curve Diffie-Hellman.
+smtpd_tls_eecdh_grade = ultra
+
+# For outgoing SMTP connections (client role of Postfix)
+# Enable TLS for outgoing connections. 'may' tries TLS but falls back if not supported.
+smtp_use_tls = yes
+# Log level for outgoing TLS activity.
+smtp_tls_loglevel = 1
+# Path to CA certificates for verifying remote server certificates.
+# Point to system CA bundle for external mail, or your internal CA for internal relay.
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+# Security level for outgoing connections.
+smtp_tls_security_level = may
+# Modern TLS protocols for outgoing. Disable these protocols
+smtpd_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+smtpd_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+# Strong cipher list for outgoing.
+smtp_tls_ciphers = high
+smtp_tls_mandatory_ciphers = high
+
+#
+# SASL Authentication (via Dovecot)
+#
+# Enable SASL authentication for SMTP clients.
+smtpd_sasl_auth_enable = yes
+# Path to Dovecot's SASL authentication socket.
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+# Policy for rejecting clients that don't authenticate.
+# 'permit_sasl_authenticated' allows authenticated users.
+# 'permit_mynetworks' allows relay from trusted networks without SASL.
+# 'reject_unauth_destination' is crucial to prevent open relay.
+smtpd_recipient_restrictions =
+    permit_sasl_authenticated,
+    permit_mynetworks,
+    reject_unauth_destination
+# Do not allow authentication over unencrypted connections.
+smtpd_sasl_security_options = noanonymous
+# Do not allow plaintext authentication mechanisms unless TLS is active.
+smtpd_tls_auth_only = yes
+
+#
+# Mailbox Delivery (using Dovecot LMTP)
+#
+# Specify Dovecot LMTP as the local delivery agent.
+# Mailboxes are managed by Dovecot.
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+# Location for mailboxes (Dovecot will handle the exact path based on its config).
+# This is a virtual user setup.
+# Create a system user for mail handling if it doesn't exist (e.g., vmail).
+# sudo groupadd -g 5000 vmail
+# sudo useradd -g vmail -u 5000 vmail -d /var/vmail -s /bin/false
+# sudo mkdir /var/vmail
+# sudo chown vmail:vmail /var/vmail
+# sudo chmod 700 /var/vmail
+# Virtual mailbox domain(s) this server is responsible for.
+virtual_mailbox_domains = smoke-break.lan
+# Mapping of virtual mailbox users to their mailbox locations.
+virtual_mailbox_maps = ldap:/etc/postfix/ldap-users.cf
+# Base path for virtual mailboxes.
+# virtual_mailbox_base = /var/vmail
+# UID for the owner of virtual mailboxes.
+# virtual_uid_maps = static:5000 # vmail user ID
+# GID for the owner of virtual mailboxes.
+# virtual_gid_maps = static:5000 # vmail group ID
+
+#
+# Alias databases
+#
+alias_maps = hash:/etc/aliases
+alias_database = hash:/etc/aliases
+
+#
+# Other settings
+#
+# Maximum size of a message in bytes. 0 for no limit. 50MB example.
+message_size_limit = 52428800
+# Maximum size of a mailbox in bytes. 0 for no limit.
+mailbox_size_limit = 0
+```
+Create `/etc/postfix/ldap-users.cf` on `mail.smoke-break.lan`:
+
+```bash
+sudo nano /etc/postfix/ldap-users.cf
+```
+Add the following content. Replace `YourStrongPasswordForLdapBinder` with the actual password you set.
+
+```ini
+server_host = ldaps://dns1.smoke-break.lan ldaps://dns2.smoke-break.lan
+server_port = 636
+version = 3
+
+# Bind credentials
+bind = yes
+bind_dn = CN=LDAP Binder,OU=ServiceAccounts,DC=smoke-break,DC=lan
+bind_pw = YourStrongPasswordForLdapBinder
+
+# Search parameters
+search_base = DC=smoke-break,DC=lan
+scope = sub
+
+# Query filter:
+# %u is the local part of the address (e.g., "test2" from "test2@smoke-break.lan")
+# %s is the full address (e.g., "test2@smoke-break.lan")
+# We assume the user part matches the sAMAccountName
+query_filter = (&(objectClass=user)(sAMAccountName=%u))
+
+# What attribute to return. Postfix just needs something to be returned to confirm existence.
+# Returning 'mail' or '1' is common. We can return sAMAccountName.
+result_attribute = sAMAccountName
+result_format = %s # This tells Postfix to use the value of result_attribute as the mapping result
+
+# TLS settings for LDAPS
+# start_tls = no # Not needed with ldaps:// URI
+tls_require_cert = hard
+tls_ca_cert_file = /etc/ssl/certs/InternalSmokeBreakCA.pem
+# For older Postfix versions, you might need:
+# tls_ca_certs = /etc/ssl/certs/InternalSmokeBreakCA.pem
+```
+Set permissions for this file:
+
+```bash 
+sudo chmod 640 /etc/postfix/ldap-users.cf
+sudo chown root:postfix /etc/postfix/ldap-users.cf
+```
+
+#### 6b. Master Configuration (`/etc/postfix/master.cf`)
+Ensure the `submission` and `smtps` services are enabled for client connections.
+Backup original: `sudo cp /etc/postfix/master.cf /etc/postfix/master.cf.bak`
+Edit `sudo nano /etc/postfix/master.cf`.
+Uncomment or add/modify these sections:
+```diff
+# ==========================================================================
+# Postfix master process configuration file
+# ==========================================================================
+
+# Standard SMTP service (port 25)
+smtp      inet  n       -       y       -       -       smtpd
+
+# Submission (port 587, for authenticated clients)
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING
+
+# SMTPS (port 465, legacy SSL wrapper mode)
+smtps     inet  n       -       y       -       -       smtpd
+  -o syslog_name=postfix/smtps
+  -o smtpd_tls_wrappermode=yes
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING
+
+# LMTP service (used for delivery to Dovecot)
+lmtp      unix  -       -       y       -       -       lmtp
+  -o lmtp_recipient_restrictions=permit_sasl_authenticated,permit_mynetworks,reject_unauth_destination
+
+# Local mail delivery
+local     unix  -       n       n       -       -       local
+
+# Virtual delivery agent (not used if you're using Dovecot LMTP)
+virtual   unix  -       n       n       -       -       virtual
+
+# Misc internal services
+pickup    unix  n       -       y       60      1       pickup
+cleanup   unix  n       -       y       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       y       1000?   1       tlsmgr
+rewrite   unix  -       -       y       -       -       trivial-rewrite
+bounce    unix  -       -       y       -       0       bounce
+defer     unix  -       -       y       -       0       bounce
+trace     unix  -       -       y       -       0       bounce
+verify    unix  -       -       y       -       1       verify
+flush     unix  n       -       y       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+showq     unix  n       -       y       -       -       showq
+error     unix  -       -       y       -       -       error
+retry     unix  -       -       y       -       -       error
+discard   unix  -       -       y       -       -       discard
+anvil     unix  -       -       y       -       1       anvil
+scache    unix  -       -       y       -       1       scache
+postlog   unix-dgram n  -       n       -       1       postlogd
+
+# (Optional) uucp and other legacy services
+uucp      unix  -       n       n       -       -       pipe
+  flags=Fqhu user=uucp argv=uux -r -n -z -a$sender - $nexthop!rmail ($recipient)
+
+# (Optional) mailman, if using mailing lists
+# mailman unix  -       n       n       -       -       pipe
+#   flags=FRX user=list argv=/usr/lib/mailman/bin/postfix-to-mailman.py ${nexthop} ${user}
+
+```
+
+#### 6c. Create `vmail` User and Group (if not done by Postfix/Dovecot packages)
+This user will own the mail directories.
+```bash
+sudo groupadd -g 5000 vmail
+sudo useradd -g vmail -u 5000 vmail -d /var/vmail -s /bin/false -M
+sudo mkdir -p /var/vmail
+sudo chown vmail:vmail /var/vmail
+sudo chmod 700 /var/vmail
+```
+
+<h3 id="mail-dovecot-config">7. Dovecot Configuration</h3>
+Dovecot will handle IMAP/POP3, LDA (Local Delivery Agent via LMTP), and SASL authentication for Postfix, using LDAPS to query Active Directory.
+
+#### 7a. Main Configuration (`/etc/dovecot/dovecot.conf`)
+Backup original: `sudo cp /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak`
+Edit `sudo nano /etc/dovecot/dovecot.conf`. Ensure it includes:
+```ini
+#
+# Specify protocols Dovecot should provide (imap, pop3, lmtp for local delivery)
+#
+!include_try /usr/share/dovecot/protocols.d/*.protocol
+
+#
+# Network listening addresses. '*' for all IPv4, '::' for all IPv6.
+#
+listen = *, ::
+
+#
+# Base directory for configuration files.
+# !include conf.d/*.conf will load all files from conf.d directory.
+#
+!include conf.d/*.conf
+```
+
+#### 7b. Mail Location (`/etc/dovecot/conf.d/10-mail.conf`)
+Backup original: `sudo cp /etc/dovecot/conf.d/10-mail.conf /etc/dovecot/conf.d/10-mail.conf.bak`
+Edit `sudo nano /etc/dovecot/conf.d/10-mail.conf`.
+```ini
+#
+# Mailbox location and format.
+# mail_location defines where mails are stored. Maildir is a common, robust format.
+# %d expands to domain, %n to username part of user@domain.
+#
+mail_location = maildir:/var/vmail/%d/%n
+
+#
+# System user and group that own the mailboxes.
+# Corresponds to the 'vmail' user created earlier.
+#
+mail_uid = vmail
+mail_gid = vmail
+
+#
+# Permissions for newly created mail files and directories.
+#
+mail_privileged_group = mail
+```
+
+#### 7c. SSL/TLS Configuration (`/etc/dovecot/conf.d/10-ssl.conf`)
+Backup original: `sudo cp /etc/dovecot/conf.d/10-ssl.conf /etc/dovecot/conf.d/10-ssl.conf.bak`
+Edit `sudo nano /etc/dovecot/conf.d/10-ssl.conf`.
+```ini
+#
+# SSL/TLS settings for IMAPS, POP3S.
+# 'required' forces SSL/TLS for all connections. 'yes' enables it.
+#
+ssl = required
+
+#
+# Path to the server's SSL certificate.
+#
+ssl_cert = </etc/ssl/certs/mail.smoke-break.lan-cert.pem
+
+#
+# Path to the server's private key.
+#
+ssl_key = </etc/ssl/private/mail.smoke-break.lan-key.pem
+
+#
+# Optional: Path to the CA certificate if client certificates are used or for trust chain.
+#
+ssl_ca = </etc/ssl/certs/InternalSmokeBreakCA.pem
+
+#
+# Preferred modern TLS protocols. Disable old and insecure ones.
+#
+ssl_min_protocol = TLSv1.2
+
+#
+# Strong cipher list for SSL/TLS connections.
+#
+ssl_cipher_list = EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
+
+#
+# Prefer server's cipher order over client's.
+#
+ssl_prefer_server_ciphers = yes
+
+#
+# Parameters for Diffie-Hellman key exchange. Generate if not present:
+# sudo openssl dhparam -out /etc/dovecot/dh.pem 4096
+# (This can take a very long time)
+# For lab purposes, 2048 bits might be faster to generate.
+# Example path, ensure this file exists. Dovecot might generate one automatically if not specified or found.
+#
+ssl_dh = </etc/dovecot/dh.pem
+# Create the dh.pem file:
+# sudo openssl dhparam -out /etc/dovecot/dh.pem 2048 # (Use 4096 for production)
+```
+Generate `dh.pem`: `sudo openssl dhparam -out /etc/dovecot/dh.pem 2048`
+
+#### 7d. Authentication (`/etc/dovecot/conf.d/10-auth.conf`)
+Backup original: `sudo cp /etc/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/10-auth.conf.bak`
+Edit `sudo nano /etc/dovecot/conf.d/10-auth.conf`.
+Disable plaintext authentication unless over SSL/TLS.
+Include the LDAP auth file.
+```ini
+#
+# Disable plaintext authentication for non-secure connections.
+#
+disable_plaintext_auth = yes
+
+#
+# Authentication mechanisms. 'plain' and 'login' are common.
+#
+auth_mechanisms = plain login
+
+#
+# Include system user authentication if needed (e.g., for local admin).
+# For a pure AD setup, this might be commented out or use !userdb_ldap.
+# For simplicity, we'll primarily use LDAP.
+# !include auth-system.conf.ext
+#
+# Include LDAP authentication configuration. This is the primary method.
+#
+!include auth-ldap.conf.ext
+```
+
+#### 7e. LDAP Authentication (`/etc/dovecot/conf.d/auth-ldap.conf.ext`)
+Create/edit `sudo nano /etc/dovecot/conf.d/auth-ldap.conf.ext`.
+This is the core of AD integration.
+```ini
+#
+# This file defines LDAP authentication settings for Dovecot.
+# It's used for both user verification (passdb) and user attribute lookups (userdb).
+#
+
+#
+# LDAP connection for password verification (passdb).
+#
+passdb {
+  #
+  # Driver for this passdb. Must be 'ldap'.
+  #
+  driver = ldap
+  #
+  # Arguments for the LDAP connection. Points to the LDAP configuration file.
+  #
+  args = /etc/dovecot/dovecot-ldap.conf.ext
+}
+
+#
+# LDAP connection for user attribute lookups (userdb).
+#
+userdb {
+  #
+  # Driver for this userdb. Must be 'ldap'.
+  #
+  driver = ldap
+  #
+  # Arguments for the LDAP connection. Points to the same LDAP configuration file.
+  #
+  args = /etc/dovecot/dovecot-ldap.conf.ext
+  #
+  # Default fields to use if LDAP lookup doesn't return them.
+  # Set uid and gid to the 'vmail' user/group.
+  #
+  default_fields = uid=vmail gid=vmail home=/var/vmail/%d/%n
+}
+```
+
+#### 7f. Dovecot LDAP Configuration (`/etc/dovecot/dovecot-ldap.conf.ext`)
+Create/edit `sudo nano /etc/dovecot/dovecot-ldap.conf.ext`.
+This file is referenced by `auth-ldap.conf.ext`.
+```ini
+#
+# LDAP server connection details.
+# Specify your AD Domain Controllers using LDAPS.
+# Multiple URIs provide failover.
+#
+uris = ldaps://dns1.smoke-break.lan ldaps://dns2.smoke-break.lan
+
+#
+# Distinguished Name (DN) of the user used to bind to LDAP for searching.
+# This is the 'ldap-binder' service account created in AD.
+# Replace with the actual DN of your ldap-binder user.
+# e.g., cn=ldap-binder,ou=ServiceAccounts,dc=smoke-break,dc=lan
+#
+dn = CN=LDAP Binder,OU=ServiceAccounts,DC=smoke-break,DC=lan
+
+#
+# Password for the dn (bind user).
+#
+dnpass = YourStrongPasswordForLdapBinder
+
+auth_bind = yes
+auth_bind_userdn = CN=%n,CN=Users,DC=smoke-break,DC=lan
+#
+# How to handle TLS certificate verification for the LDAP server.
+# 'hard': Require a valid certificate from a trusted CA.
+# 'try': Attempt to verify, but connect anyway if verification fails.
+# 'never': Do not attempt to verify.
+# 'hard' is recommended for security.
+#
+tls_require_cert = hard
+
+#
+# Path to the CA certificate file that signed the LDAP server's certificate.
+# This should be your internal CA's certificate.
+#
+tls_ca_cert_file = /etc/ssl/certs/InternalSmokeBreakCA.pem
+# Or use the system-wide store if preferred and mail server trusts it.
+# tls_ca_cert_dir = /etc/ssl/certs
+
+#
+# LDAP protocol version. Version 3 is standard.
+#
+ldap_version = 3
+
+#
+# Base DN for user searches in Active Directory.
+# Adjust to where your user OUs are located.
+# e.g., ou=Users,dc=smoke-break,dc=lan
+#
+base = DC=smoke-break,DC=lan
+
+#
+# Search scope for user lookups.
+# 'subtree': Search the base DN and all entries below it.
+# 'onelevel': Search only direct children of the base DN.
+# 'base': Search only the base DN entry itself.
+#
+scope = subtree
+
+#
+# LDAP filter to find a user for authentication (password check).
+# %u = full username (user@domain), %n = username part, %d = domain part.
+# sAMAccountName is typically used for login names in AD.
+#
+pass_filter = (&(objectClass=user)(sAMAccountName=%n))
+
+#
+# LDAP filter to find a user for attribute lookups (user information).
+#
+user_filter = (&(objectClass=user)(sAMAccountName=%n))
+
+#
+# Attributes to fetch from LDAP for password verification. None needed if just checking password.
+# pass_attrs =
+
+#
+# Attributes to fetch from LDAP for user information (userdb).
+# mail= récupère l'adresse e-mail de l'utilisateur.
+# sAMAccountName=user récupère le nom de connexion.
+# homeDirectory, uidNumber, gidNumber can be used to override mail_location components if set in AD.
+# For simplicity, we use static uid/gid and home path from 10-mail.conf and auth-ldap.conf.ext.
+# If you want to use AD attributes for home directory, UID, GID:
+# user_attrs = \
+#  homeDirectory=home, \
+#  uidNumber=uid, \
+#  gidNumber=gid, \
+#  mail=mail
+# If AD users have 'mail' attribute set (e.g. user@smoke-break.lan), use it for userdb lookup.
+#
+user_attrs = sAMAccountName=user
+# The 'mail' attribute in AD usually stores the primary email address.
+# We also need a way to construct the mailbox path, so we use %n (username) and %d (domain).
+# Dovecot automatically makes these available.
+
+#
+# Enable LDAP debug logging if troubleshooting (0=off, 1=basic, 2=detailed).
+# auth_debug = yes
+# auth_debug_passwords = yes # Be careful with this in production
+# mail_debug = yes
+```
+
+#### 7g. Master Service Configuration (`/etc/dovecot/conf.d/10-master.conf`)
+Backup original: `sudo cp /etc/dovecot/conf.d/10-master.conf /etc/dovecot/conf.d/10-master.conf.bak`
+Edit `sudo nano /etc/dovecot/conf.d/10-master.conf`.
+Ensure the LMTP listener for Postfix and the SASL authentication listener are correctly configured.
+```ini
+#
+# Service definitions for Dovecot.
+#
+
+#
+# LMTP listener for local mail delivery from Postfix.
+#
+service lmtp {
+  #
+  # Unix socket for Postfix to connect to.
+  #
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    #
+    # Group that Postfix runs under (usually 'postfix').
+    #
+    group = postfix
+    #
+    # User that Postfix runs under (usually 'postfix').
+    #
+    user = postfix
+    #
+    # Permissions for the socket file.
+    #
+    mode = 0600
+  }
+}
+
+#
+# Authentication service.
+#
+service auth {
+  #
+  # Unix socket for Postfix SASL authentication.
+  #
+  unix_listener /var/spool/postfix/private/auth {
+    #
+    # Group that Postfix runs under.
+    #
+    group = postfix
+    #
+    # User that Postfix runs under.
+    #
+    user = postfix
+    #
+    # Permissions for the socket file.
+    #
+    mode = 0660 # Postfix needs read/write
+  }
+
+  #
+  # Alternative if Postfix runs chrooted and cannot access the above socket.
+  # This path would be relative to the Postfix chroot jail.
+  # unix_listener auth-userdb {
+  #  mode = 0600
+  #  user = vmail # Or the user Postfix runs as in chroot
+  # }
+}
+
+#
+# Worker process for authentication lookups.
+#
+service auth-worker {
+  #
+  # User to run authentication worker processes as. 'dovecot' is common.
+  #
+  user = dovecot
+}
+
+#
+# Login services for IMAP/POP3.
+#
+service imap-login {
+  #
+  # Number of login processes.
+  #
+  inet_listener imap { port = 143 }
+  inet_listener imaps { port = 993 ssl = yes }
+}
+service pop3-login {
+  #
+  # Number of login processes.
+  #
+  inet_listener pop3 { port = 110 }
+  inet_listener pop3s { port = 995 ssl = yes }
+}
+```
+Make sure the `/var/spool/postfix/private/` directory exists and has correct permissions for Postfix to create sockets. It usually does.
+
+#### 7h. Restart Services and Check Status
+```bash
+sudo systemctl restart postfix
+sudo systemctl restart dovecot
+sudo systemctl status postfix
+sudo systemctl status dovecot
+```
+Check logs for errors: `sudo journalctl -u postfix -f` and `sudo journalctl -u dovecot -f`.
+Also check `sudo less /var/log/mail.log`.
+
+<h3 id="mail-firewall">8. Firewall Configuration on Mail Server</h3>
+
+```bash
+# On mail.smoke-break.lan:
+sudo ufw allow 22/tcp    # SSH
+sudo ufw allow 25/tcp    # SMTP (for STARTTLS)
+sudo ufw allow 110/tcp   # POP3
+sudo ufw allow 143/tcp   # IMAP
+sudo ufw allow 465/tcp   # SMTPS (SMTP over SSL)
+sudo ufw allow 587/tcp   # Submission (SMTP with STARTTLS, for clients)
+sudo ufw allow 993/tcp   # IMAPS (IMAP over SSL)
+sudo ufw allow 995/tcp   # POP3S (POP3 over SSL)
+sudo ufw enable
+sudo ufw status
+```
+
+<h3 id="mail-dns-records">9. DNS Records for Mail Server</h3>
+
+On `dns1` (or your primary AD DNS server), add A and MX records for the mail server.
+```bash
+# On dns1:
+# A record for mail.smoke-break.lan
+sudo samba-tool dns add dns1.smoke-break.lan smoke-break.lan mail A 192.168.10.103 -U administrator
+
+# MX record for smoke-break.lan domain, pointing to mail.smoke-break.lan with preference 10
+sudo samba-tool dns add dns1.smoke-break.lan smoke-break.lan @ MX "mail.smoke-break.lan. 10" -U administrator
+```
+Enter administrator password when prompted. Verify with `host -t A mail.smoke-break.lan` and `host -t MX smoke-break.lan` from a client.
+
+<h3 id="mail-testing">10. Testing the Mail Server</h3>
+
+1.  **Configure a Mail Client**: Use a desktop mail client (e.g., Thunderbird) on one of your Windows client VMs.
+    *   **IMAP Server**: `mail.smoke-break.lan`, Port `993`, SSL/TLS: `SSL/TLS`, Authentication: `Normal password`
+    *   **SMTP Server**: `mail.smoke-break.lan`, Port `587`, SSL/TLS: `STARTTLS`, Authentication: `Normal password`
+    *   **Username**: An AD username (e.g., `administrator` or another test user from `smoke-break.lan`)
+    *   **Password**: The AD user's password.
+    *   Accept the self-signed certificate if prompted (or better, install `InternalSmokeBreakCA.pem` into Thunderbird's trusted CAs or the Windows client's CA store).
+2.  **Send and Receive**: Send an email from one AD user to another AD user within `smoke-break.lan`. Check if it's received.
+3.  **Check Logs**:
+    *   On `mail.smoke-break.lan`: `sudo tail -f /var/log/mail.log` (shows Postfix and Dovecot activity).
+    *   Check for successful LDAP authentications and mail delivery.
+
+---

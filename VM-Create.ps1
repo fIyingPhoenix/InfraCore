@@ -4,338 +4,318 @@ param (
     [switch]$Uninstall
 )
 
-# Common Configuration Variables
-$VMRootPath = "C:\Hyper-V"  # Change this to your desired root path
-$VMPath = "$VMRootPath\VMs" # Path for VM storage
-$VHDPath = "$VMRootPath\VHDs" # Path for VHD storage
-$MemoryMinimumBytes = 512MB # Minimum memory for dynamic memory
-$MemoryMaximumBytes = 2GB   # Maximum memory for dynamic memory
-$MemoryStartupBytes = 1GB   # Startup memory
-$CPUCoreAllocate = 2        # Number of CPU cores to allocate
-$VHDSizeBytes = 64GB        # Size of the VHD
-$ServerBaseName = "Linux - Server" # Base name for server VMs
-$ClientBaseName = "Win - Client"   # Base name for client VMs
-$RouterBaseName = "Linux - Router" # Base name for router VMs
-$SwitchBaseName = "PrivateSwitch"  # Base name for private switches 
+# --- Configuration Variables ---
 
-# Ensure ISOs point to different files as needed
-$ISO_Client = "d:\ISOs\client.iso"
-$ISO_Server = "d:\ISOs\server.iso"
+# Paths
+$VMRootPath = "C:\Hyper-V"          # Root directory for Hyper-V files for this project
+$VMPath = Join-Path -Path $VMRootPath -ChildPath "VMs"        # Storage for VM configuration files
+$VHDPath = Join-Path -Path $VMRootPath -ChildPath "VHDs"       # Storage for Virtual Hard Disks
+
+# ISO Paths - IMPORTANT: Update these paths to your ISO files
+$ISO_UbuntuServer = "D:\ISOs\ubuntu.iso"       # Path to your Ubuntu Server ISO
+$ISO_WindowsClient = "D:\ISOs\Win11.iso"       # Path to your Windows Client ISO
+
+# Network Configuration
+$DefaultWANSwitchName = "" # Will be selected by the user
+$PrivateSwitchBaseName = "PrivateSwitch" # Base name for private switches (e.g., PrivateSwitch 1)
+
+# --- VM Definitions ---
+# Define each VM with its specific configuration.
+# VHDSize, StartupMem, MinMem, MaxMem are in Bytes (e.g., 1GB, 512MB).
+# SecureBootTemplate can be "MicrosoftUEFICertificateAuthority" or "MicrosoftWindows"
+$vmDefinitions = @(
+    # Routers
+    @{ VMName = "Linux - Router 1";       ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 32GB; StartupMem = 1GB; MinMem = 512MB; MaxMem = 2GB; CPUCount = 1; IsWindows = $false },
+    @{ VMName = "Linux - Router 2";       ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 32GB; StartupMem = 1GB; MinMem = 512MB; MaxMem = 2GB; CPUCount = 1; IsWindows = $false },
+
+    # AD/DNS Servers
+    @{ VMName = "Linux - AD_DNS 1";       ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 64GB; StartupMem = 2GB; MinMem = 1GB; MaxMem = 4GB; CPUCount = 2; IsWindows = $false },
+    @{ VMName = "Linux - AD_DNS 2";       ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 64GB; StartupMem = 2GB; MinMem = 1GB; MaxMem = 4GB; CPUCount = 2; IsWindows = $false },
+
+    # DHCP Server
+    @{ VMName = "Linux - DHCP Server";    ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 32GB; StartupMem = 1GB; MinMem = 512MB; MaxMem = 2GB; CPUCount = 1; IsWindows = $false },
+
+    # Mail Server
+    @{ VMName = "Linux - Mail Server";    ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 64GB; StartupMem = 2GB; MinMem = 1GB; MaxMem = 4GB; CPUCount = 2; IsWindows = $false },
+
+    # Nextcloud Server
+    @{ VMName = "Linux - Nextcloud Server"; ISOPath = $ISO_UbuntuServer;  EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftUEFICertificateAuthority"; VHDSize = 128GB;StartupMem = 2GB; MinMem = 1GB; MaxMem = 4GB; CPUCount = 2; IsWindows = $false },
+
+    # Windows Clients
+    @{ VMName = "Windows - Client 1";     ISOPath = $ISO_WindowsClient; EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftWindows"; VHDSize = 64GB; StartupMem = 4GB; MinMem = 2GB; MaxMem = 8GB; CPUCount = 2; IsWindows = $true },
+    @{ VMName = "Windows - Client 2";     ISOPath = $ISO_WindowsClient; EnableSecureBoot = $true; SecureBootTemplate = "MicrosoftWindows"; VHDSize = 64GB; StartupMem = 4GB; MinMem = 2GB; MaxMem = 8GB; CPUCount = 2; IsWindows = $true }  
+)
+
+# --- Script Logic ---
 
 # Display help if no parameters provided
 if (-not ($Install -or $Uninstall)) {
     Write-Host "VM Management Script - Usage:" -ForegroundColor Cyan
-    Write-Host "  -Install                : Create VMs and private switches" -ForegroundColor Yellow
-    Write-Host "  -Uninstall              : Remove all VMs and resources created by this script" -ForegroundColor Yellow
+    Write-Host "  -Install                : Create VMs and private switches as defined in the script." -ForegroundColor Yellow
+    Write-Host "  -Uninstall              : Remove all VMs and resources created by this script." -ForegroundColor Yellow
     exit
 }
 
-# Check for elevation
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Write-Host "[X] Missing privileges! Restarting as administrator..." -ForegroundColor Yellow
-    
-    # Add parameters to restart command
+# Check for Administrator privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
+    Write-Warning "This script requires Administrator privileges. Restarting as administrator..."
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($Install) { $arguments += " -Install" }
     if ($Uninstall) { $arguments += " -Uninstall" }
-    
-    Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
+    Start-Process powershell.exe -ArgumentList $arguments -Verb RunAs
     exit
 }
 
-# Check if Hyper-V is installed
+# Check if Hyper-V PowerShell module is available
 if (-not (Get-Command Get-VMSwitch -ErrorAction SilentlyContinue)) {
-    Write-Host "[X] Hyper-V PowerShell module not found! Please ensure Hyper-V is installed." -ForegroundColor Red
+    Write-Error "Hyper-V PowerShell module not found! Please ensure Hyper-V is installed and the module is available."
     exit
 }
-# MAIN VM CREATION SECTION (INSTALL) 
+
+# --- Installation Logic ---
 if ($Install) {
-# Function to select a virtual switch 
-function Select-VirtualSwitch {
-    $switches = Get-VMSwitch
-    
-    if (-not $switches) {
-        Write-Host "[X] No virtual switches found. Please create a virtual switch first." -ForegroundColor Red
-        exit
+    Write-Host "`n--- Starting Installation Process ---" -ForegroundColor Green
+
+    # Function to select the WAN virtual switch for initial VM connection
+    function Select-WANVirtualSwitch {
+        $switches = Get-VMSwitch
+        if (-not $switches) {
+            Write-Error "No virtual switches found. Please create an External or Internal virtual switch for WAN access first."
+            exit
+        }
+
+        Write-Host "`nAvailable Virtual Switches (for initial WAN connection):" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $switches.Count; $i++) {
+            Write-Host "  [$i] $($switches[$i].Name) (Type: $($switches[$i].SwitchType))"
+        }
+
+        $selection = Read-Host "`nEnter the number of the virtual switch to use for initial VM WAN access. Default: 0"
+        $index = 0
+        if (-not [string]::IsNullOrEmpty($selection) -and $selection -match "^\d+$") {
+            $selectedIndex = [int]$selection
+            if ($selectedIndex -ge 0 -and $selectedIndex -lt $switches.Count) {
+                $index = $selectedIndex
+            } else {
+                Write-Warning "Invalid selection. Using the first available switch."
+            }
+        } elseif (-not [string]::IsNullOrEmpty($selection)) {
+            Write-Warning "Invalid input. Using the first available switch."
+        }
+        
+        Write-Host "[+] VMs will be initially connected to WAN switch: $($switches[$index].Name)" -ForegroundColor Cyan
+        Write-Host "[!] Note: Internal network connections to PrivateSwitches need to be configured manually as per the README." -ForegroundColor Yellow
+        return $switches[$index].Name
     }
-    
-    # Show available switches
-    Write-Host "`nAvailable Virtual Switches:" -ForegroundColor Cyan
-    for ($i = 0; $i -lt $switches.Count; $i++) {
-        $switchType = $switches[$i].SwitchType
-        Write-Host "[$i] $($switches[$i].Name) (Type: $switchType)" -ForegroundColor DarkYellow
-    }
-    
-    # Prompt for switch selection
-    $selection = Read-Host "`nEnter the number of the virtual switch to use (default: 0)"
-    
-    # Default to first switch if no input
-    if ([string]::IsNullOrEmpty($selection)) {
-        $selection = 0
-    }
-    
-    # Validate selection
-    try {
-        $index = [int]$selection
-        if ($index -lt 0 -or $index -ge $switches.Count) {
-            Write-Host "[X] Invalid selection. Using the first available switch." -ForegroundColor Yellow
-            $index = 0
+
+    $DefaultWANSwitchName = Select-WANVirtualSwitch
+
+    # Create storage directories
+    foreach ($path in @($VMPath, $VHDPath)) {
+        if (-not (Test-Path -Path $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            Write-Host "[+] Created directory: $path" -ForegroundColor Green
         }
     }
-    catch {
-        Write-Host "[X] Invalid input. Using the first available switch." -ForegroundColor Yellow
-        $index = 0
+
+    # Create Private Switches as per documentation
+    Write-Host "`n[+] Creating Private Switches..." -ForegroundColor Cyan
+    for ($s = 1; $s -le 3; $s++) {
+        $privSwitchName = "$PrivateSwitchBaseName $s"
+        if (-not (Get-VMSwitch -Name $privSwitchName -ErrorAction SilentlyContinue)) {
+            New-VMSwitch -Name $privSwitchName -SwitchType Private -Notes "Private network for InfraCore lab" | Out-Null
+            Write-Host "  [+] Created Private Switch: $privSwitchName" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Private Switch '$privSwitchName' already exists. Skipping." -ForegroundColor Yellow
+        }
     }
-    
-    return $switches[$index].Name
-}
 
-# Select the virtual switch to use
-$SwitchName = Select-VirtualSwitch
-Write-Host "[+] Using virtual switch: $SwitchName" -ForegroundColor Cyan
-
-# Create storage directories if they don't exist
-if (-not (Test-Path -Path $VMPath)) {
-    New-Item -ItemType Directory -Path $VMPath -Force | Out-Null
-    Write-Host "[+] Created VM storage path: $VMPath" -ForegroundColor Green
-}
-if (-not (Test-Path -Path $VHDPath)) {
-    New-Item -ItemType Directory -Path $VHDPath -Force | Out-Null
-    Write-Host "[+] Created VHD storage path: $VHDPath" -ForegroundColor Green
-}
-
-# Define VM groups
-$vmGroups = @(
-    @{ BaseName = $RouterBaseName; Count = 2; ISO = $ISO_Server; EnableSecureBoot = $false },
-    @{ BaseName = $ServerBaseName; Count = 5; ISO = $ISO_Server; EnableSecureBoot = $false },
-    @{ BaseName = $ClientBaseName; Count = 2; ISO = $ISO_Client; EnableSecureBoot = $true }
-)
-
-# Create VMs
-foreach ($group in $vmGroups) {
-    $baseName = $group.BaseName
-    $count = $group.Count
-    $isoPath = $group.ISO
-    $enableSecureBoot = $group.EnableSecureBoot
-    
-    for ($i = 1; $i -le $count; $i++) {
-        $VMName = "$baseName $i"
+    # Create VMs
+    Write-Host "`n[+] Creating Virtual Machines..." -ForegroundColor Cyan
+    foreach ($vmDef in $vmDefinitions) {
+        $VMName = $vmDef.VMName
         $VMStoragePath = Join-Path -Path $VMPath -ChildPath $VMName
         $VHDFile = Join-Path -Path $VHDPath -ChildPath "$VMName.vhdx"
-        
-        Write-Host "`n[+] Starting creation of VM: $VMName" -ForegroundColor Blue
-        
-        # Check if VM already exists
+
+        Write-Host "`n  --- Processing VM: $VMName ---" -ForegroundColor Blue
+
         if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
-            Write-Host "[!] VM '$VMName' already exists, skipping." -ForegroundColor Yellow
+            Write-Host "  [!] VM '$VMName' already exists. Skipping." -ForegroundColor Yellow
             continue
         }
-        
+
         # Create VM folder
         if (-not (Test-Path -Path $VMStoragePath)) {
             New-Item -ItemType Directory -Path $VMStoragePath -Force | Out-Null
         }
 
-        # Create Virtual HD first
+        # Create Virtual Hard Disk
         if (-not (Test-Path -Path $VHDFile)) {
-            Write-Host "[+] Creating virtual hard disk: $VHDFile" -ForegroundColor Cyan
-            New-VHD -Path $VHDFile -SizeBytes $VHDSizeBytes -Dynamic | Out-Null
+            Write-Host "  [+] Creating VHD: $VHDFile (Size: $([math]::Round($vmDef.VHDSize/1GB,0))GB)"
+            New-VHD -Path $VHDFile -SizeBytes $vmDef.VHDSize -Dynamic | Out-Null
         }
-        
+
         # Create Generation 2 VM
-        Write-Host "[+] Creating VM with $CPUCoreAllocate cores and $([math]::Round($MemoryStartupBytes/1GB, 1))GB RAM" -ForegroundColor Cyan
-        New-VM -Name $VMName -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $VHDFile -Path $VMStoragePath -SwitchName $SwitchName | Out-Null
+        Write-Host "  [+] Creating VM (CPU: $($vmDef.CPUCount), Startup RAM: $([math]::Round($vmDef.StartupMem/1MB,0))MB)"
+        New-VM -Name $VMName -Generation 2 -MemoryStartupBytes $vmDef.StartupMem -VHDPath $VHDFile -Path $VMStoragePath -SwitchName $DefaultWANSwitchName | Out-Null
         
         # Configure Dynamic Memory
-        Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $true -MinimumBytes $MemoryMinimumBytes -MaximumBytes $MemoryMaximumBytes
+        Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $true -MinimumBytes $vmDef.MinMem -MaximumBytes $vmDef.MaxMem
         
-        # Set number of CPU cores
-        Set-VMProcessor -VMName $VMName -Count $CPUCoreAllocate | Out-Null
+        # Set CPU cores
+        Set-VMProcessor -VMName $VMName -Count $vmDef.CPUCount | Out-Null
         
-        # Check if ISO exists before attaching
-        if (Test-Path -Path $isoPath) {
-            Write-Host "[+] Attaching ISO: $isoPath" -ForegroundColor Cyan
-            Add-VMDvdDrive -VMName $VMName -Path $isoPath | Out-Null
+        # Attach ISO
+        if (Test-Path -Path $vmDef.ISOPath) {
+            Write-Host "  [+] Attaching ISO: $($vmDef.ISOPath)"
+            Add-VMDvdDrive -VMName $VMName -Path $vmDef.ISOPath | Out-Null
         } else {
-            Write-Host "[!] Warning: ISO file not found at $isoPath" -ForegroundColor Yellow
+            Write-Warning "  [!] ISO file not found: $($vmDef.ISOPath). VM will be created without an ISO."
         }
        
-        # Configure firmware settings based on OS type
-        if ($enableSecureBoot) {
-            Write-Host "[+] Enabling Secure Boot" -ForegroundColor Cyan
+        # Configure Firmware (Secure Boot, TPM)
+        if ($vmDef.EnableSecureBoot) {
+            Write-Host "  [+] Enabling Secure Boot for $VMName."
             Set-VMFirmware -VMName $VMName -EnableSecureBoot On | Out-Null
-            # Add TPM for Windows 11 clients
-            Write-Host "[+] Setting up TPM " -ForegroundColor Cyan
-            # Create a key protector for the VM
-            Set-VMKeyProtector -VMName $VMName -NewLocalKeyProtector
-            Enable-VMTPM -VMName $VMName | Out-Null
+            
+            if (-not [string]::IsNullOrEmpty($vmDef.SecureBootTemplate)) {
+                Write-Host "  [+] Applying Secure Boot Template: $($vmDef.SecureBootTemplate)"
+                try {
+                    Set-VMFirmware -VMName $VMName -SecureBootTemplate $vmDef.SecureBootTemplate -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Warning "  [!] Failed to apply Secure Boot Template '$($vmDef.SecureBootTemplate)' for $VMName. Error: $($_.Exception.Message)"
+                    Write-Warning "  [!] VM might not boot correctly if the OS requires this specific template. Ensure the template name is valid."
+                }
+            }
         } else {
-            Write-Host "[+] Disabling Secure Boot for Linux compatibility" -ForegroundColor Cyan
+            Write-Host "  [+] Disabling Secure Boot for $VMName."
             Set-VMFirmware -VMName $VMName -EnableSecureBoot Off | Out-Null
         }
 
-        # Set boot order to DVD drive first
-        try {
-            Write-Host "[+] Setting boot order: DVD first" -ForegroundColor Cyan
-            
-            # Get the DVD drive
-            $DVDDrive = Get-VMDvdDrive -VMName $VMName
-            
-            if ($DVDDrive) {
-                # Get all boot entries
-                $VMFirmware = Get-VMFirmware -VMName $VMName
-                $BootOrder = $VMFirmware.BootOrder
-                
-                # Find the DVD device in the boot order
-                $DVDEntry = $BootOrder | Where-Object { $_.Device -eq $DVDDrive }
-                
-                if ($DVDEntry) {
-                    # Set DVD as first boot device
-                    Set-VMFirmware -VMName $VMName -FirstBootDevice $DVDEntry
-                    Write-Host "[+] Successfully set DVD as first boot device" -ForegroundColor Cyan
-                } else {
-                    Write-Host "[!] DVD entry not found in boot order. Trying alternative method..." -ForegroundColor Yellow
-                    # If DVD entry is not found, we can set the first boot device directly
-                    # Create a new boot order with DVD first
-                    # Note: We can't directly manipulate BootOrder, we need to use FirstBootDevice
-                    # for the DVD and let the system handle the rest
-                    Set-VMFirmware -VMName $VMName -FirstBootDevice $DVDDrive
-                    
-                    Write-Host "[+] Set DVD drive as first boot device" -ForegroundColor Cyan
-                }
-            } else {
-                Write-Host "[!] No DVD drive found for VM: $VMName" -ForegroundColor Yellow
+        # Enable TPM for Windows VMs (mandatory for Win11, good for others too)
+        # This is done regardless of Secure Boot state for Windows, as TPM is a separate requirement/feature.
+        if ($vmDef.IsWindows) {
+            Write-Host "  [+] Enabling TPM for Windows VM: $VMName."
+            try {
+                Set-VMKeyProtector -VMName $VMName -NewLocalKeyProtector -ErrorAction Stop | Out-Null
+                Enable-VMTPM -VMName $VMName -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Warning "  [!] Failed to enable TPM for $VMName. Error: $($_.Exception.Message)"
+                Write-Warning "  [!] Windows 11 installation might fail without TPM."
             }
-        } catch {
-            Write-Host "[!] Error setting boot order: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+
+        # Set Boot Order to DVD first
+        $DvdDrive = Get-VMDvdDrive -VMName $VMName | Select-Object -First 1
+        if ($DvdDrive) {
+            Write-Host "  [+] Setting DVD drive as first boot device."
+            try {
+                Set-VMFirmware -VMName $VMName -FirstBootDevice $DvdDrive -ErrorAction Stop
+            } catch {
+                Write-Warning "  [!] Could not set DVD as first boot device for $VMName. Error: $($_.Exception.Message)"
+                Write-Warning "  [!] Manual check of boot order might be needed in Hyper-V Manager."
+            }
+        } else {
+            Write-Warning "  [!] No DVD drive found to set boot order for $VMName (possibly no ISO attached)."
         }
         
-        Write-Host "[OK] Finished creating VM: $VMName" -ForegroundColor Green
+        Write-Host "  [OK] Finished creating VM: $VMName" -ForegroundColor Green
     }
+    Write-Host "`n--- Installation Process Completed ---" -ForegroundColor Green
 }
 
-Write-Host "`n[OK] Script completed successfully!" -ForegroundColor Green
-
-write-host "`n [+] Create Private Switch:" -ForegroundColor Blue
-
-# Define Switch groups
-$swGroups = @(
-    @{ BaseName = "$SwitchBaseName 1"; },
-    @{ BaseName = "$SwitchBaseName 2"; },
-    @{ BaseName = "$SwitchBaseName 3"; }
-    )
-# Create Private Switches
-foreach ($group in $swGroups){
-    $baseName = $group.BaseName
-    # Fix: Changed SVName to baseName
-    New-VMSwitch -Name $baseName -SwitchType Private
-    write-host "`n [+] Switch $baseName Created" -ForegroundColor Blue
-}
-}
-# UNINSTALL SECTION
+# --- Uninstallation Logic ---
 if ($Uninstall) {
-    Write-Host "`n[+] Starting uninstall process..." -ForegroundColor Blue
+    Write-Host "`n--- Starting Uninstallation Process ---" -ForegroundColor DarkYellow
     
-    # Check if Hyper-V PowerShell module is available
-    if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) {
-        Write-Host "[X] Hyper-V PowerShell module not found! Cannot perform uninstall." -ForegroundColor Red
+    # Confirm removal of all resources
+    $confirmUninstall = Read-Host "ARE YOU SURE you want to remove all VMs, VHDs, and Private Switches created by this script? (Y/N)"
+    if ($confirmUninstall -ne "Y" -and $confirmUninstall -ne "y") {
+        Write-Host "[!] Uninstall canceled by user." -ForegroundColor Yellow
         exit
     }
-    
-    # Get all VMs created by this script based on naming patterns
-    $vmGroups = @(
-        @{ Pattern = "$RouterBaseName *" },
-        @{ Pattern = "$ServerBaseName *" },
-        @{ Pattern = "$ClientBaseName *" }
-    )
-    
-    $vmsToRemove = @()
-    foreach ($group in $vmGroups) {
-        $vmsToRemove += Get-VM -Name $group.Pattern -ErrorAction SilentlyContinue
-    }
-    
-    # Confirm VM removal
-    if ($vmsToRemove.Count -gt 0) {
-        Write-Host "`nThe following VMs will be removed:" -ForegroundColor Yellow
-        $vmsToRemove | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor White }
+
+    # Remove VMs
+    Write-Host "`n[-] Removing Virtual Machines and their VHDs..." -ForegroundColor Red
+    foreach ($vmDef in $vmDefinitions) {
+        $VMName = $vmDef.VMName
+        $VMToDelete = Get-VM -Name $VMName -ErrorAction SilentlyContinue
         
-        $confirm = Read-Host "`nAre you sure you want to remove these VMs? (Y/N)"
-        if ($confirm -ne "Y" -and $confirm -ne "y") {
-            Write-Host "[!] Uninstall canceled." -ForegroundColor Yellow
-            exit
-        }
-        
-        # Remove VMs
-        foreach ($vm in $vmsToRemove) {
-            Write-Host "[-] Removing VM: $($vm.Name)" -ForegroundColor DarkRed
+        if ($VMToDelete) {
+            Write-Host "  --- Processing VM for deletion: $VMName ---" -ForegroundColor Magenta
             
             # Stop VM if running
-            if ($vm.State -ne 'Off') {
-                Write-Host "[-] Stopping VM..." -ForegroundColor DarkRed
-                Stop-VM -Name $vm.Name -Force -TurnOff
+            if ($VMToDelete.State -ne 'Off') {
+                Write-Host "  [-] Stopping VM: $VMName"
+                Stop-VM -VM $VMToDelete -Force -TurnOff -Confirm:$false
             }
             
             # Get VM hard disks before removing the VM
-            $vmHardDisks = Get-VMHardDiskDrive -VMName $vm.Name | Select-Object -ExpandProperty Path
+            $vmHardDisks = Get-VMHardDiskDrive -VMName $VMName | Select-Object -ExpandProperty Path
             
-            # Remove the VM
-            Remove-VM -Name $vm.Name -Force
+            Write-Host "  [-] Removing VM: $VMName"
+            Remove-VM -VM $VMToDelete -Force -Confirm:$false
             
             # Remove associated VHD files
-            foreach ($disk in $vmHardDisks) {
-                if (Test-Path -Path $disk) {
-                    Write-Host "[-] Removing disk: $disk" -ForegroundColor DarkRed
-                    Remove-Item -Path $disk -Force
+            if ($null -ne $vmHardDisks) {
+                foreach ($diskPath in $vmHardDisks) {
+                    if (Test-Path -Path $diskPath) {
+                        Write-Host "  [-] Removing VHD: $diskPath"
+                        Remove-Item -Path $diskPath -Force -Confirm:$false
+                    }
                 }
             }
             
-            # Remove VM folder
-            $vmPath = Join-Path -Path $VMPath -ChildPath $vm.Name
-            if (Test-Path -Path $vmPath) {
-                Write-Host "[-] Removing VM folder: $vmPath" -ForegroundColor DarkRed
-                Remove-Item -Path $vmPath -Recurse -Force
+            # Remove VM configuration folder
+            $VMStoragePath = Join-Path -Path $VMPath -ChildPath $VMName
+            if (Test-Path -Path $VMStoragePath) {
+                Write-Host "  [-] Removing VM configuration folder: $VMStoragePath"
+                Remove-Item -Path $VMStoragePath -Recurse -Force -Confirm:$false
             }
-        }
-    } else {
-        Write-Host "[!] No matching VMs found to remove." -ForegroundColor Yellow
-    }
-    
-    # Remove private switches
-    $switchPatterns = @("$SwitchBaseName *")
-    foreach ($pattern in $switchPatterns) {
-        $switchesToRemove = Get-VMSwitch -Name $pattern -ErrorAction SilentlyContinue
-        
-        if ($switchesToRemove.Count -gt 0) {
-            Write-Host "`nRemoving virtual switches:" -ForegroundColor Yellow
-            $switchesToRemove | ForEach-Object { 
-                Write-Host "[-] Removing switch: $($_.Name)" -ForegroundColor DarkRed
-                Remove-VMSwitch -Name $_.Name -Force
-            }
+        } else {
+            Write-Host "  [!] VM '$VMName' not found for deletion. Skipping." -ForegroundColor Yellow
         }
     }
-    
-    # Ask to remove VM and VHD directories
-    $cleanupDirs = Read-Host "`nDo you want to remove the Hyper-V directories ($VMPath and $VHDPath)? (Y/N)"
-    if ($cleanupDirs -eq "Y" -or $cleanupDirs -eq "y") {
-        $directories = @($VMPath, "$VHDPath")
-        foreach ($dir in $directories) {
-            if (Test-Path -Path $dir) {
-                Write-Host "[-] Removing directory: $dir" -ForegroundColor DarkRed
-                Remove-Item -Path $dir -Recurse -Force
-            }
-        }
-        
-        # Remove parent directory if it's empty
-    $cleanupRootDir = Read-Host "`nDo you want to remove the Hyper-V Root Directory? ($VMRootPath)? (Y/N)"
-        if (($cleanupRootDir -eq "Y" -or $cleanupDirs -eq "y") -and (Test-Path -Path $VMRootPath)) {
-            $items = Get-ChildItem -Path $VMRootPath -ErrorAction SilentlyContinue
-            if (-not $items) {
-                Write-Host "[-] Removing empty parent directory: $VMRootPath" -ForegroundColor DarkRed
-                Remove-Item -Path $VMRootPath -Force
-            }
+
+    # Remove Private Switches
+    Write-Host "`n[-] Removing Private Switches..." -ForegroundColor Red
+    for ($s = 1; $s -le 3; $s++) {
+        $privSwitchName = "$PrivateSwitchBaseName $s"
+        $switchToRemove = Get-VMSwitch -Name $privSwitchName -ErrorAction SilentlyContinue
+        if ($switchToRemove) {
+            Write-Host "  [-] Removing Private Switch: $privSwitchName"
+            Remove-VMSwitch -VMSwitch $switchToRemove -Force -Confirm:$false
+        } else {
+            Write-Host "  [!] Private Switch '$privSwitchName' not found. Skipping." -ForegroundColor Yellow
         }
     }
     
-    Write-Host "`n[OK] Uninstall completed successfully!" -ForegroundColor Green
-    exit
+    # Ask to remove main VM and VHD directories if they are empty
+    Write-Host "" # Newline for better readability
+    $cleanupDirsConfirm = Read-Host "Do you want to attempt to remove the main VHD and VM directories ($VHDPath, $VMPath)? (Y/N)"
+    if ($cleanupDirsConfirm -eq "Y" -or $cleanupDirsConfirm -eq "y") {
+        foreach ($dirToRemove in @($VHDPath, $VMPath)) {
+            if (Test-Path -Path $dirToRemove) {
+                # Check if directory is empty
+                if ((Get-ChildItem -Path $dirToRemove -ErrorAction SilentlyContinue).Count -eq 0) {
+                    Write-Host "[-] Removing empty directory: $dirToRemove"
+                    Remove-Item -Path $dirToRemove -Force -Confirm:$false
+                } else {
+                    Write-Warning "[!] Directory '$dirToRemove' is not empty. Manual cleanup might be required."
+                }
+            }
+        }
+        # Attempt to remove root project directory if empty
+        if (Test-Path -Path $VMRootPath -PathType Container) {
+             if ((Get-ChildItem -Path $VMRootPath -ErrorAction SilentlyContinue).Count -eq 0) {
+                Write-Host "[-] Removing empty root project directory: $VMRootPath"
+                Remove-Item -Path $VMRootPath -Force -Confirm:$false
+            } else {
+                Write-Warning "[!] Root project directory '$VMRootPath' is not empty. Manual cleanup might be required if all project items were expected to be removed."
+            }
+        }
+    }
+    
+    Write-Host "`n--- Uninstallation Process Completed ---" -ForegroundColor Green
 }
+
+Write-Host "`nScript finished."
